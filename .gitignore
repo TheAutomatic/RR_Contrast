@@ -1,0 +1,24 @@
+# Build & output artifacts
+/bin/
+/obj/
+/out/
+/results/
+/third_party/
+
+# Binaries & archives
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+*.lib
+*.exp
+*.rgba16f
+*.bin
+*.zst
+*.7z
+*.zip
+*.tar
+*.nsys-rep
+*.ncu-rep
+*.qdrep
