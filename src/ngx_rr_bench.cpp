@@ -22,7 +22,6 @@
 #ifdef RR_USE_OFFICIAL_NGX_SDK
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_defs_dlssd.h>
-#include <nvsdk_ngx_helpers_dlssd.h>
 #else
 #include "rr_ngx_abi.hpp"
 #endif
@@ -1036,33 +1035,35 @@ NVSDK_NGX_Result CreateRrFeature(
     uint32_t preset_hint,
     NVSDK_NGX_Handle** out_handle)
 {
-    params->SetUInt(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
-    params->SetUInt(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
-    params->SetUInt(NVSDK_NGX_Parameter_Width, create_rw);
-    params->SetUInt(NVSDK_NGX_Parameter_Height, create_rh);
-    params->SetUInt(NVSDK_NGX_Parameter_OutWidth, out_w);
-    params->SetUInt(NVSDK_NGX_Parameter_OutHeight, out_h);
-    params->SetInt(NVSDK_NGX_Parameter_PerfQualityValue, perf_quality);
-    params->SetInt(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
-                   NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
-                   NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-                   NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
-                   NVSDK_NGX_DLSS_Feature_Flags_AutoExposure); // 0x4B
-    params->SetInt(NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
-    params->SetInt(NVSDK_NGX_Parameter_DLSS_Denoise_Mode, NVSDK_NGX_DLSS_Denoise_Mode_DLUnified);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Roughness_Mode, NVSDK_NGX_DLSS_Roughness_Mode_Packed);
-    params->SetUInt(NVSDK_NGX_Parameter_Use_HW_Depth, NVSDK_NGX_DLSS_Depth_Type_HW);
+    params->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
+    params->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
+    params->Set(NVSDK_NGX_Parameter_Width, static_cast<unsigned int>(create_rw));
+    params->Set(NVSDK_NGX_Parameter_Height, static_cast<unsigned int>(create_rh));
+    params->Set(NVSDK_NGX_Parameter_OutWidth, static_cast<unsigned int>(out_w));
+    params->Set(NVSDK_NGX_Parameter_OutHeight, static_cast<unsigned int>(out_h));
+    params->Set(NVSDK_NGX_Parameter_PerfQualityValue, static_cast<int>(perf_quality));
+    params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
+                static_cast<int>(NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
+                                 NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+                                 NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
+                                 NVSDK_NGX_DLSS_Feature_Flags_AutoExposure)); // 0x4B
+    params->Set(NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Denoise_Mode, static_cast<int>(NVSDK_NGX_DLSS_Denoise_Mode_DLUnified));
+    params->Set(NVSDK_NGX_Parameter_DLSS_Roughness_Mode, static_cast<unsigned int>(NVSDK_NGX_DLSS_Roughness_Mode_Packed));
+    params->Set(NVSDK_NGX_Parameter_Use_HW_Depth, static_cast<unsigned int>(NVSDK_NGX_DLSS_Depth_Type_HW));
 
-    params->SetUInt(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA, preset_hint);
-    params->SetUInt(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, preset_hint);
-    params->SetUInt(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, preset_hint);
-    params->SetUInt(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, preset_hint);
-    params->SetUInt(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance, preset_hint);
-    params->SetUInt(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance, preset_hint);
+    const unsigned int preset_ui = static_cast<unsigned int>(preset_hint);
+    params->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA, preset_ui);
+    params->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, preset_ui);
+    params->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, preset_ui);
+    params->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, preset_ui);
+    params->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance, preset_ui);
+    params->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance, preset_ui);
 
     CheckHr(dx.ca->Reset(), "CreateRrFeature ca->Reset");
     CheckHr(dx.cl->Reset(dx.ca.Get(), nullptr), "CreateRrFeature cl->Reset");
 #ifdef RR_USE_OFFICIAL_NGX_SDK
+    (void)ngx;
     const NVSDK_NGX_Result r = NVSDK_NGX_D3D12_CreateFeature(dx.cl.Get(), NVSDK_NGX_Feature_RayReconstruction, params, out_handle);
 #else
     const NVSDK_NGX_Result r = ngx.create_feature(dx.cl.Get(), NVSDK_NGX_Feature_RayReconstruction, params, out_handle);
@@ -1076,104 +1077,108 @@ NVSDK_NGX_Result CreateRrFeature(
 
 void BindEvalParams(
     NVSDK_NGX_Parameter* params,
-    rr_ref::FrameScalarParams& fp, // non-const because NGX SetVoidPtr takes float* for matrices
+    rr_ref::FrameScalarParams& fp, // non-const because NGX Set(void*) takes float* for matrices
     uint32_t guide_mask,
     const GpuSceneResources& gpu)
 {
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_Color, gpu.color.res.Get());
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_Output, gpu.output.res.Get());
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_Depth, gpu.depth.res.Get());
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_MotionVectors, gpu.mvec.res.Get());
-    params->SetFloat(NVSDK_NGX_Parameter_Jitter_Offset_X, fp.jitter_x);
-    params->SetFloat(NVSDK_NGX_Parameter_Jitter_Offset_Y, fp.jitter_y);
-    params->SetInt(NVSDK_NGX_Parameter_Reset, fp.reset);
-    params->SetFloat(NVSDK_NGX_Parameter_MV_Scale_X, fp.mv_scale_x);
-    params->SetFloat(NVSDK_NGX_Parameter_MV_Scale_Y, fp.mv_scale_y);
-    params->SetFloat(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, fp.pre_exposure);
-    params->SetFloat(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, fp.exposure_scale);
+    auto setTex = [&](const char* key, ID3D12Resource* tex) {
+        params->Set(key, tex);
+    };
 
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, fp.rw);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, fp.rh);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_Color, gpu.color.res.Get());
+    setTex(NVSDK_NGX_Parameter_Output, gpu.output.res.Get());
+    setTex(NVSDK_NGX_Parameter_Depth, gpu.depth.res.Get());
+    setTex(NVSDK_NGX_Parameter_MotionVectors, gpu.mvec.res.Get());
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_X, fp.jitter_x);
+    params->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, fp.jitter_y);
+    params->Set(NVSDK_NGX_Parameter_Reset, static_cast<int>(fp.reset));
+    params->Set(NVSDK_NGX_Parameter_MV_Scale_X, fp.mv_scale_x);
+    params->Set(NVSDK_NGX_Parameter_MV_Scale_Y, fp.mv_scale_y);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, fp.pre_exposure);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, fp.exposure_scale);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DiffuseAlbedo, gpu.diffuse.res.Get());
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_SpecularAlbedo, gpu.specular.res.Get());
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_GBuffer_Normals, gpu.normals.res.Get());
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_GBuffer_Roughness, nullptr); // Packed in Normals.w
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_Y, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_Y, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, static_cast<unsigned int>(fp.rw));
+    params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, static_cast<unsigned int>(fp.rh));
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y, 0u);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance,
-                             (guide_mask & rr_ref::kGuideOmitHitDist) ? nullptr : gpu.hit_dist.res.Get());
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DiffuseAlbedo, gpu.diffuse.res.Get());
+    setTex(NVSDK_NGX_Parameter_SpecularAlbedo, gpu.specular.res.Get());
+    setTex(NVSDK_NGX_Parameter_GBuffer_Normals, gpu.normals.res.Get());
+    setTex(NVSDK_NGX_Parameter_GBuffer_Roughness, nullptr); // Packed in Normals.w
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_Y, 0u);
 
-    params->SetVoidPtr(NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, fp.world_to_view);
-    params->SetVoidPtr(NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX, fp.view_to_clip);
+    setTex(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance,
+           (guide_mask & rr_ref::kGuideOmitHitDist) ? nullptr : gpu.hit_dist.res.Get());
+    params->Set(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_Y, 0u);
+
+    params->Set(NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, static_cast<void*>(fp.world_to_view));
+    params->Set(NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX, static_cast<void*>(fp.view_to_clip));
 
     // Optional guides (always explicitly set to resource or nullptr so stale bindings never persist)
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSS_DisocclusionMask,
-                             (guide_mask & rr_ref::kGuideDisocclusion) ? gpu.disocc.res.Get() : nullptr);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DLSS_DisocclusionMask,
+           (guide_mask & rr_ref::kGuideDisocclusion) ? gpu.disocc.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_Y, 0u);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSS_TransparencyLayer,
-                             (guide_mask & rr_ref::kGuideTranspLayer) ? gpu.transp.res.Get() : nullptr);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DLSS_TransparencyLayer,
+           (guide_mask & rr_ref::kGuideTranspLayer) ? gpu.transp.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_Y, 0u);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity,
-                             (guide_mask & rr_ref::kGuideTranspLayer) ? gpu.transp_op.res.Get() : nullptr);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity,
+           (guide_mask & rr_ref::kGuideTranspLayer) ? gpu.transp_op.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_Y, 0u);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs,
-                             (guide_mask & rr_ref::kGuideTranspMvecs) ? gpu.transp_mvec.res.Get() : nullptr);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs,
+           (guide_mask & rr_ref::kGuideTranspMvecs) ? gpu.transp_mvec.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs_Subrect_Base_Y, 0u);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide,
-                             (guide_mask & rr_ref::kGuideSssAndCbt) ? gpu.sss.res.Get() : nullptr);
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency,
-                             (guide_mask & rr_ref::kGuideSssAndCbt) ? gpu.cbt.res.Get() : nullptr);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide,
+           (guide_mask & rr_ref::kGuideSssAndCbt) ? gpu.sss.res.Get() : nullptr);
+    setTex(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency,
+           (guide_mask & rr_ref::kGuideSssAndCbt) ? gpu.cbt.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_Y, 0u);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_GBuffer_SpecularMvec,
-                             (guide_mask & rr_ref::kGuideSpecularMvec) ? gpu.spec_mvec.res.Get() : nullptr);
+    setTex(NVSDK_NGX_Parameter_GBuffer_SpecularMvec,
+           (guide_mask & rr_ref::kGuideSpecularMvec) ? gpu.spec_mvec.res.Get() : nullptr);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask,
-                             (guide_mask & rr_ref::kGuideResponsivity) ? gpu.resp.res.Get() : nullptr);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask,
+           (guide_mask & rr_ref::kGuideResponsivity) ? gpu.resp.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_Y, 0u);
 
-    params->SetD3D12Resource(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide,
-                             (guide_mask & rr_ref::kGuideDepthOfField) ? gpu.dof.res.Get() : nullptr);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_X, 0u);
-    params->SetUInt(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide,
+           (guide_mask & rr_ref::kGuideDepthOfField) ? gpu.dof.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_X, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_Y, 0u);
 }
 
 uint64_t QueryNgxReportedDlssdVramBytes(NVSDK_NGX_Parameter* cap_params)
 {
     void* cb = nullptr;
-    if (!NVSDK_NGX_SUCCEED(cap_params->GetVoidPtr(NVSDK_NGX_Parameter_DLSSDGetStatsCallback, &cb)) || !cb)
+    if (!NVSDK_NGX_SUCCEED(cap_params->Get(NVSDK_NGX_Parameter_DLSSDGetStatsCallback, &cb)) || !cb)
         return 0;
     auto fn = reinterpret_cast<PFN_NVSDK_NGX_DLSS_GetStatsCallback>(cb);
     if (!NVSDK_NGX_SUCCEED(fn(cap_params)))
         return 0;
     unsigned long long bytes = 0;
-    if (!NVSDK_NGX_SUCCEED(cap_params->GetULL(NVSDK_NGX_Parameter_SizeInBytes, &bytes)))
+    if (!NVSDK_NGX_SUCCEED(cap_params->Get(NVSDK_NGX_Parameter_SizeInBytes, &bytes)))
         return 0;
     return static_cast<uint64_t>(bytes);
 }
@@ -1346,15 +1351,40 @@ struct NgxSession
     NgxApi ngx;
     D3dContext dx;
     fs::path abs_dlssd;
+    fs::path session_out_dir;
     fs::path ngx_log_dir;
+    uint64_t req_bytes = 0;
+    std::string req_sha256;
+    bool allow_dll_mismatch = false;
+    bool dll_verified_after_create = false;
+    LoadedDlssdInfo verified_loaded {};
     NVSDK_NGX_Parameter* params = nullptr;
     int rr_available = 0;
 
-    void Start(const fs::path& dlssd_path, const fs::path& loader_path, const fs::path& out_dir, uint32_t vendor_id)
+    void Start(
+        const fs::path& dlssd_path,
+        const fs::path& loader_path,
+        const fs::path& out_dir,
+        uint32_t vendor_id,
+        bool allow_mismatch)
     {
         abs_dlssd = fs::absolute(dlssd_path);
         Require(fs::exists(abs_dlssd), "--dlssd file does not exist: " + WideToUtf8(abs_dlssd.wstring()));
-        ngx_log_dir = fs::absolute(out_dir / "ngx_appdata");
+        session_out_dir = fs::absolute(out_dir);
+        allow_dll_mismatch = allow_mismatch;
+        req_sha256 = Sha256FileHex(abs_dlssd, &req_bytes);
+
+        if (!allow_dll_mismatch)
+        {
+            Require(req_sha256 == kExpectedDlssdSha256,
+                    "Requested --dlssd file (" + WideToUtf8(abs_dlssd.wstring()) +
+                    ", version=" + QueryPeFileVersion(abs_dlssd) +
+                    ", sha256=" + req_sha256 +
+                    ") does NOT match expected official 310.9.1.0 SHA-256 (" + kExpectedDlssdSha256 +
+                    "). Pass --allow-dll-mismatch only if intentionally testing another DLL.");
+        }
+
+        ngx_log_dir = session_out_dir / "ngx_appdata";
         fs::create_directories(ngx_log_dir);
 
         dx.Init(vendor_id);
@@ -1371,7 +1401,36 @@ struct NgxSession
 
         const NVSDK_NGX_Result pr = ngx.GetParams(&params);
         Require(NVSDK_NGX_SUCCEED(pr) && params != nullptr, "GetCapabilityParameters failed: " + HexU32(static_cast<uint32_t>(pr)));
-        params->GetInt(NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &rr_available);
+        params->Get(NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &rr_available);
+    }
+
+    const LoadedDlssdInfo& EnsureLoadedDlssdVerified(uint32_t preset_hint, const std::string& manifest_filename = "env_manifest.json")
+    {
+        if (dll_verified_after_create)
+            return verified_loaded;
+
+        verified_loaded = InspectLoadedDlssdModule();
+        WriteEnvManifest(session_out_dir / manifest_filename, dx, ngx, abs_dlssd, verified_loaded, rr_available, preset_hint);
+
+        if (!allow_dll_mismatch)
+        {
+            Require(verified_loaded.module_loaded,
+                    "nvngx_dlssd.dll was not found in process modules after CreateFeature! Check " +
+                    WideToUtf8((session_out_dir / manifest_filename).wstring()));
+            Require(verified_loaded.loaded_sha256 == req_sha256,
+                    "Loaded nvngx_dlssd.dll (" + WideToUtf8(verified_loaded.loaded_path.wstring()) +
+                    ", sha256=" + verified_loaded.loaded_sha256 +
+                    ") does NOT match requested --dlssd (" + req_sha256 +
+                    ")! Driver/NVIDIA App override may have redirected it. Disable DLSS override or pass --allow-dll-mismatch.");
+            Require(verified_loaded.loaded_sha256 == kExpectedDlssdSha256,
+                    "Loaded nvngx_dlssd.dll (version=" + verified_loaded.loaded_version +
+                    ", sha256=" + verified_loaded.loaded_sha256 +
+                    ") does NOT match expected 310.9.1.0 SHA-256 (" + kExpectedDlssdSha256 +
+                    ")! Pass --allow-dll-mismatch only if intentional.");
+        }
+
+        dll_verified_after_create = true;
+        return verified_loaded;
     }
 
     ~NgxSession()
@@ -1394,7 +1453,7 @@ void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const
 {
     fs::create_directories(out_dir);
     NgxSession sess;
-    sess.Start(dlssd_path, loader_path, out_dir, vendor_id);
+    sess.Start(dlssd_path, loader_path, out_dir, vendor_id, allow_dll_mismatch);
 
     const uint32_t rw = 1280, rh = 720, ow = 1920, oh = 1080;
     rr_ref::CpuFrameBuffers cpu;
@@ -1410,20 +1469,7 @@ void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const
                                                 NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, &handle);
     Require(NVSDK_NGX_SUCCEED(cr) && handle != nullptr, "Smoke CreateFeature(RayReconstruction) failed: " + HexU32(static_cast<uint32_t>(cr)));
 
-    const LoadedDlssdInfo loaded = InspectLoadedDlssdModule();
-    WriteEnvManifest(out_dir / "env_manifest.json", sess.dx, sess.ngx, sess.abs_dlssd, loaded, sess.rr_available, 6u);
-
-    uint64_t req_bytes = 0;
-    const std::string req_sha256 = Sha256FileHex(sess.abs_dlssd, &req_bytes);
-    if (!allow_dll_mismatch)
-    {
-        Require(loaded.module_loaded,
-                "nvngx_dlssd.dll was not found in process modules after CreateFeature! Check env_manifest.json.");
-        Require(loaded.loaded_sha256 == req_sha256,
-                "Loaded nvngx_dlssd.dll (" + WideToUtf8(loaded.loaded_path.wstring()) + ", sha256=" + loaded.loaded_sha256 +
-                ") does NOT match requested --dlssd (" + req_sha256 + ")! Driver/NGX override may have redirected it. "
-                "Disable DLSS override or pass --allow-dll-mismatch if intentional.");
-    }
+    const LoadedDlssdInfo& loaded = sess.EnsureLoadedDlssdVerified(6u, "env_manifest.json");
 
     std::vector<uint16_t> px_f000, px_f015_normal, px_f015_reset;
     PixelStats st_f000 {}, st_f015_normal {}, st_f015_reset {};
@@ -1498,7 +1544,8 @@ void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const
         << "  \"temporal_history_active\": " << (history_active ? "true" : "false") << ",\n"
         << "  \"f015_mean_luma\": " << st_f015_normal.mean_luma << ",\n"
         << "  \"loaded_dlssd_version\": \"" << JsonEscape(loaded.loaded_version) << "\",\n"
-        << "  \"loaded_dlssd_sha256\": \"" << loaded.loaded_sha256 << "\"\n"
+        << "  \"loaded_dlssd_sha256\": \"" << loaded.loaded_sha256 << "\",\n"
+        << "  \"matches_expected_310_9_1_0_sha256\": " << ((loaded.loaded_sha256 == kExpectedDlssdSha256) ? "true" : "false") << "\n"
         << "}\n";
 
     std::printf("[PASS] Smoke test succeeded on %s | DLL=%s (%s) | temporal_history_active=%s\n",
@@ -1527,9 +1574,10 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
                                                 sc.perf_quality, sc.preset_hint, &handle);
     Require(NVSDK_NGX_SUCCEED(cr) && handle != nullptr,
             sc.id + ": CreateFeature failed: " + HexU32(static_cast<uint32_t>(cr)));
+    sess.EnsureLoadedDlssdVerified(sc.preset_hint);
 
     std::ofstream csv(case_dir / "frames_manifest.csv", std::ios::binary);
-    csv << "frame,rw,rh,reset,ngx_result_hex,recreated,input_sha256,output_fnv1a64,output_sha256,non_finite,min_luma,max_luma,mean_luma\n";
+    csv << "frame,rw,rh,initial_reset,initial_ngx_result_hex,initial_input_sha256,recreated,effective_reset,effective_ngx_result_hex,effective_input_sha256,output_fnv1a64,output_sha256,non_finite,min_luma,max_luma,mean_luma\n";
 
     const uint32_t total_frames = sc.steady_frames + sc.drs_frames;
     const uint32_t drs_w = (sc.steady_rw * 85u / 100u) & ~1u;
@@ -1540,7 +1588,7 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
     {
         uint32_t rw = sc.steady_rw;
         uint32_t rh = sc.steady_rh;
-        int32_t reset = (f == 0) ? 1 : 0;
+        int32_t initial_reset = (f == 0) ? 1 : 0;
 
         if (sc.has_drs && f >= sc.steady_frames)
         {
@@ -1549,70 +1597,89 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
             const bool lower = ((di / 4u) & 1u) == 0u;
             rw = lower ? drs_w : sc.steady_rw;
             rh = lower ? drs_h : sc.steady_rh;
-            reset = (di >= 8u && (di % 4u) == 0u) ? 1 : 0;
+            initial_reset = (di >= 8u && (di % 4u) == 0u) ? 1 : 0;
         }
 
         rr_ref::FrameScalarParams fp {};
         rr_ref::PrepareFrame(sc.scene, sc.guide_mask, f, rw, rh, sc.out_w, sc.out_h,
-                             reset, sc.preset_hint, sc.perf_quality, fp, cpu);
+                             initial_reset, sc.preset_hint, sc.perf_quality, fp, cpu);
         if (sc.scene != rr_ref::SceneId::S0_BenchParity)
             gpu.UploadFrame(sess.dx, cpu, rw, rh, sc.guide_mask);
 
-        const std::string in_sha = rr_ref::ComputeCanonicalFrameInputSha256(fp, sc.guide_mask, cpu);
-        BindEvalParams(sess.params, fp, sc.guide_mask, gpu);
+        const std::string initial_in_sha = rr_ref::ComputeCanonicalFrameInputSha256(fp, sc.guide_mask, cpu);
 
-        CheckHr(sess.dx.ca->Reset(), "Quality eval ca->Reset");
-        CheckHr(sess.dx.cl->Reset(sess.dx.ca.Get(), nullptr), "Quality eval cl->Reset");
-#ifdef RR_USE_OFFICIAL_NGX_SDK
-        NVSDK_NGX_Result er = NVSDK_NGX_D3D12_EvaluateFeature(sess.dx.cl.Get(), handle, sess.params, nullptr);
-#else
-        NVSDK_NGX_Result er = sess.ngx.evaluate_feature(sess.dx.cl.Get(), handle, sess.params, nullptr);
-#endif
         int recreated = 0;
-        if (NVSDK_NGX_SUCCEED(er))
+        int32_t effective_reset = initial_reset;
+        std::string effective_in_sha = initial_in_sha;
+        NVSDK_NGX_Result initial_er = NVSDK_NGX_Result_FAIL_FeatureNotFound;
+        NVSDK_NGX_Result effective_er = NVSDK_NGX_Result_FAIL_FeatureNotFound;
+
+        if (handle != nullptr)
         {
-            sess.dx.ExecuteAndSync("Quality EvaluateFeature");
+            BindEvalParams(sess.params, fp, sc.guide_mask, gpu);
+            CheckHr(sess.dx.ca->Reset(), "Quality eval ca->Reset");
+            CheckHr(sess.dx.cl->Reset(sess.dx.ca.Get(), nullptr), "Quality eval cl->Reset");
+#ifdef RR_USE_OFFICIAL_NGX_SDK
+            initial_er = NVSDK_NGX_D3D12_EvaluateFeature(sess.dx.cl.Get(), handle, sess.params, nullptr);
+#else
+            initial_er = sess.ngx.evaluate_feature(sess.dx.cl.Get(), handle, sess.params, nullptr);
+#endif
+            effective_er = initial_er;
+            if (NVSDK_NGX_SUCCEED(initial_er))
+                sess.dx.ExecuteAndSync("Quality EvaluateFeature");
+            else
+                CheckHr(sess.dx.cl->Close(), "Close failed DRS eval cl");
         }
-        else
+
+        if (!NVSDK_NGX_SUCCEED(effective_er))
         {
-            CheckHr(sess.dx.cl->Close(), "Close failed DRS eval cl");
-            // On DRS frames, record failure cleanly and test feature recreate at new (rw, rh) if subrect was rejected
+            // On DRS frames, record initial failure cleanly and fall back to feature recreate at (rw, rh) with Reset=1
             if (sc.has_drs && f >= sc.steady_frames)
             {
+                if (handle)
+                {
 #ifdef RR_USE_OFFICIAL_NGX_SDK
-                NVSDK_NGX_D3D12_ReleaseFeature(handle);
+                    NVSDK_NGX_D3D12_ReleaseFeature(handle);
 #else
-                sess.ngx.release_feature(handle);
+                    sess.ngx.release_feature(handle);
 #endif
-                handle = nullptr;
+                    handle = nullptr;
+                }
                 const NVSDK_NGX_Result rcr = CreateRrFeature(sess.ngx, sess.dx, sess.params, rw, rh, sc.out_w, sc.out_h,
                                                              sc.perf_quality, sc.preset_hint, &handle);
+                recreated = 1;
+                effective_reset = 1;
+                fp.reset = 1;
+                effective_in_sha = rr_ref::ComputeCanonicalFrameInputSha256(fp, sc.guide_mask, cpu);
+
                 if (NVSDK_NGX_SUCCEED(rcr) && handle != nullptr)
                 {
-                    recreated = 1;
-                    fp.reset = 1;
                     BindEvalParams(sess.params, fp, sc.guide_mask, gpu);
                     CheckHr(sess.dx.ca->Reset(), "Quality recreated ca->Reset");
                     CheckHr(sess.dx.cl->Reset(sess.dx.ca.Get(), nullptr), "Quality recreated cl->Reset");
 #ifdef RR_USE_OFFICIAL_NGX_SDK
-                    er = NVSDK_NGX_D3D12_EvaluateFeature(sess.dx.cl.Get(), handle, sess.params, nullptr);
+                    effective_er = NVSDK_NGX_D3D12_EvaluateFeature(sess.dx.cl.Get(), handle, sess.params, nullptr);
 #else
-                    er = sess.ngx.evaluate_feature(sess.dx.cl.Get(), handle, sess.params, nullptr);
+                    effective_er = sess.ngx.evaluate_feature(sess.dx.cl.Get(), handle, sess.params, nullptr);
 #endif
-                    if (NVSDK_NGX_SUCCEED(er))
+                    if (NVSDK_NGX_SUCCEED(effective_er))
                         sess.dx.ExecuteAndSync("Quality recreated EvaluateFeature");
                     else
                         CheckHr(sess.dx.cl->Close(), "Close failed recreated cl");
                 }
+                else
+                {
+                    effective_er = rcr;
+                }
             }
             else
             {
-                throw std::runtime_error(sc.id + ": EvaluateFeature failed at steady frame " + std::to_string(f) + ": " + HexU32(static_cast<uint32_t>(er)));
+                throw std::runtime_error(sc.id + ": EvaluateFeature failed at steady frame " + std::to_string(f) + ": " + HexU32(static_cast<uint32_t>(initial_er)));
             }
         }
 
         PixelStats pst {};
-        if (NVSDK_NGX_SUCCEED(er))
+        if (NVSDK_NGX_SUCCEED(effective_er))
         {
             gpu.ReadbackOutputPixels(sess.dx, out_px);
             pst = AnalyzeOutputRgba16f(out_px);
@@ -1624,8 +1691,10 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
             }
         }
 
-        csv << f << "," << rw << "," << rh << "," << reset << "," << HexU32(static_cast<uint32_t>(er)) << ","
-            << recreated << "," << in_sha << "," << HexU64(pst.fnv1a64) << "," << pst.sha256 << ","
+        csv << f << "," << rw << "," << rh << ","
+            << initial_reset << "," << HexU32(static_cast<uint32_t>(initial_er)) << "," << initial_in_sha << ","
+            << recreated << "," << effective_reset << "," << HexU32(static_cast<uint32_t>(effective_er)) << "," << effective_in_sha << ","
+            << HexU64(pst.fnv1a64) << "," << pst.sha256 << ","
             << pst.non_finite << "," << std::fixed << std::setprecision(6)
             << pst.min_luma << "," << pst.max_luma << "," << pst.mean_luma << "\n";
     }
@@ -1638,6 +1707,7 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
         sess.ngx.release_feature(handle);
 #endif
     }
+    csv.flush();
     std::printf("[DONE] %s (%u frames, %zu saved raw frames)\n", sc.id.c_str(), total_frames, sc.save_frames.size());
 }
 
@@ -1699,11 +1769,19 @@ void RunTimingCaseRound(NgxSession& sess, const SuiteCase& sc, uint32_t round_id
     const NVSDK_NGX_Result cr = CreateRrFeature(sess.ngx, sess.dx, sess.params,
                                                 sc.alloc_rw, sc.alloc_rh, sc.out_w, sc.out_h,
                                                 sc.perf_quality, sc.preset_hint, &handle);
-    Require(NVSDK_NGX_SUCCEED(cr) && handle != nullptr, sc.id + ": Timing CreateFeature failed");
+    Require(NVSDK_NGX_SUCCEED(cr) && handle != nullptr, sc.id + ": Timing CreateFeature failed: " + HexU32(static_cast<uint32_t>(cr)));
+    sess.EnsureLoadedDlssdVerified(sc.preset_hint);
+
     const uint64_t vram_after_create = sess.dx.QueryProcessLocalVramBytes();
     const size_t scratch_bytes = sess.ngx.QueryScratchBytes(sess.params);
 
-    auto evalTimed = [&](uint32_t f_idx, uint32_t rw, uint32_t rh, int32_t reset) -> double {
+    struct TimedEvalResult
+    {
+        NVSDK_NGX_Result rc = NVSDK_NGX_Result_Fail;
+        double gpu_ms = -1.0;
+    };
+
+    auto evalTimed = [&](uint32_t f_idx, uint32_t rw, uint32_t rh, int32_t reset) -> TimedEvalResult {
         rr_ref::FrameScalarParams fp {};
         rr_ref::PrepareFrame(rr_ref::SceneId::S0_BenchParity, 0u, f_idx, rw, rh, sc.out_w, sc.out_h,
                              reset, sc.preset_hint, sc.perf_quality, fp, cpu);
@@ -1717,51 +1795,117 @@ void RunTimingCaseRound(NgxSession& sess, const SuiteCase& sc, uint32_t round_id
 #else
         const NVSDK_NGX_Result er = sess.ngx.evaluate_feature(sess.dx.cl.Get(), handle, sess.params, nullptr);
 #endif
-        Require(NVSDK_NGX_SUCCEED(er), sc.id + ": Timing EvaluateFeature failed: " + HexU32(static_cast<uint32_t>(er)));
+        if (!NVSDK_NGX_SUCCEED(er))
+        {
+            CheckHr(sess.dx.cl->Close(), "Close failed Timing cl");
+            return {er, -1.0};
+        }
         sess.dx.cl->EndQuery(sess.dx.ts_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
         sess.dx.cl->ResolveQueryData(sess.dx.ts_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, sess.dx.ts_readback.Get(), 0);
         sess.dx.ExecuteAndSync("Timing EvaluateFeature");
-        return sess.dx.ReadLastGpuMs();
+        return {er, sess.dx.ReadLastGpuMs()};
     };
 
     uint64_t vram_after_first_eval = 0;
     for (uint32_t i = 0; i < sc.warmup_frames; ++i)
     {
-        evalTimed(i, sc.steady_rw, sc.steady_rh, i == 0 ? 1 : 0);
+        const TimedEvalResult tr = evalTimed(i, sc.steady_rw, sc.steady_rh, i == 0 ? 1 : 0);
+        Require(NVSDK_NGX_SUCCEED(tr.rc), sc.id + ": Timing warmup EvaluateFeature failed at frame " + std::to_string(i) + ": " + HexU32(static_cast<uint32_t>(tr.rc)));
         if (i == 0) vram_after_first_eval = sess.dx.QueryProcessLocalVramBytes();
     }
 
     const std::string tag = "r" + std::to_string(round_idx);
     std::ofstream csv(case_dir / ("per_frame_gpu_ms_" + tag + ".csv"), std::ios::binary);
-    csv << "phase,index,rw,rh,reset,gpu_ms\n";
+    csv << "phase,index,rw,rh,reset,ngx_result_hex,gpu_ms\n";
 
     std::vector<double> steady_ms;
     steady_ms.reserve(sc.steady_frames);
     for (uint32_t i = 0; i < sc.steady_frames; ++i)
     {
-        const double ms = evalTimed(sc.warmup_frames + i, sc.steady_rw, sc.steady_rh, 0);
-        steady_ms.push_back(ms);
-        csv << "steady," << i << "," << sc.steady_rw << "," << sc.steady_rh << ",0," << std::fixed << std::setprecision(6) << ms << "\n";
+        const TimedEvalResult tr = evalTimed(sc.warmup_frames + i, sc.steady_rw, sc.steady_rh, 0);
+        Require(NVSDK_NGX_SUCCEED(tr.rc), sc.id + ": Timing steady EvaluateFeature failed at frame " + std::to_string(i) + ": " + HexU32(static_cast<uint32_t>(tr.rc)));
+        steady_ms.push_back(tr.gpu_ms);
+        csv << "steady," << i << "," << sc.steady_rw << "," << sc.steady_rh << ",0,"
+            << HexU32(static_cast<uint32_t>(tr.rc)) << "," << std::fixed << std::setprecision(6) << tr.gpu_ms << "\n";
     }
+    csv.flush();
+
     const uint64_t vram_steady_end = sess.dx.QueryProcessLocalVramBytes();
     const uint64_t ngx_stats_vram = QueryNgxReportedDlssdVramBytes(sess.params);
+    const DistStats st_s = ComputeDistStats(steady_ms);
+    auto toMb = [](uint64_t b) { return static_cast<double>(b) / (1024.0 * 1024.0); };
+    const double delta_steady_mb = vram_steady_end > vram_before_create ? toMb(vram_steady_end - vram_before_create) : 0.0;
 
+    auto writeSummaryJson = [&](const std::string& drs_status,
+                                NVSDK_NGX_Result drs_err,
+                                int drs_failed_idx,
+                                const std::vector<double>& drs_samples,
+                                uint64_t vram_drs) {
+        const DistStats st_d = ComputeDistStats(drs_samples);
+        std::ofstream js(case_dir / ("timing_summary_" + tag + ".json"), std::ios::binary);
+        js << std::fixed << std::setprecision(4)
+           << "{\n"
+           << "  \"case_id\": \"" << sc.id << "\",\n"
+           << "  \"round\": " << round_idx << ",\n"
+           << "  \"resolution\": \"" << sc.steady_rw << "x" << sc.steady_rh << "->" << sc.out_w << "x" << sc.out_h << "\",\n"
+           << "  \"steady_frames\": " << steady_ms.size() << ",\n"
+           << "  \"steady_gpu_ms\": { \"mean\": " << st_s.mean << ", \"median\": " << st_s.median
+           << ", \"p95\": " << st_s.p95 << ", \"p99\": " << st_s.p99
+           << ", \"min\": " << st_s.min_v << ", \"max\": " << st_s.max_v << ", \"stddev\": " << st_s.stddev << " },\n"
+           << "  \"drs_status\": \"" << drs_status << "\",\n"
+           << "  \"drs_error_hex\": \"" << HexU32(static_cast<uint32_t>(drs_err)) << "\",\n"
+           << "  \"drs_failed_at_index\": " << drs_failed_idx << ",\n"
+           << "  \"drs_completed_frames\": " << drs_samples.size() << ",\n"
+           << "  \"drs_gpu_ms\": { \"mean\": " << st_d.mean << ", \"median\": " << st_d.median
+           << ", \"p95\": " << st_d.p95 << ", \"p99\": " << st_d.p99
+           << ", \"min\": " << st_d.min_v << ", \"max\": " << st_d.max_v << ", \"stddev\": " << st_d.stddev << " },\n"
+           << "  \"vram_mb\": {\n"
+           << "    \"dxgi_process_local_before_create\": " << toMb(vram_before_create) << ",\n"
+           << "    \"dxgi_process_local_after_create\": " << toMb(vram_after_create) << ",\n"
+           << "    \"dxgi_process_local_after_first_eval\": " << toMb(vram_after_first_eval) << ",\n"
+           << "    \"dxgi_process_local_steady_end\": " << toMb(vram_steady_end) << ",\n"
+           << "    \"dxgi_process_local_drs_end\": " << toMb(vram_drs) << ",\n"
+           << "    \"dxgi_process_local_delta_steady\": " << delta_steady_mb << ",\n"
+           << "    \"ngx_dlssd_get_stats_mb\": " << toMb(ngx_stats_vram) << ",\n"
+           << "    \"ngx_scratch_buffer_mb\": " << toMb(scratch_bytes) << "\n"
+           << "  }\n"
+           << "}\n";
+    };
+
+    // Persist steady summary immediately BEFORE running DRS so 240-frame steady data is never lost
+    std::string drs_status = (sc.has_drs && sc.drs_frames > 0) ? "pending" : "not_applicable";
+    NVSDK_NGX_Result drs_error = NVSDK_NGX_Result_Success;
+    int drs_failed_idx = -1;
     std::vector<double> drs_ms;
+    writeSummaryJson(drs_status, drs_error, drs_failed_idx, drs_ms, vram_steady_end);
+
     if (sc.has_drs && sc.drs_frames > 0)
     {
         const uint32_t drs_w = (sc.steady_rw * 85u / 100u) & ~1u;
         const uint32_t drs_h = (sc.steady_rh * 85u / 100u) & ~1u;
         drs_ms.reserve(sc.drs_frames);
+        drs_status = "ok";
         for (uint32_t i = 0; i < sc.drs_frames; ++i)
         {
             const bool lower = ((i / 4u) & 1u) != 0u;
             const int32_t switched = (i % 4u) == 0u ? 1 : 0; // Matches openrr_bench.cpp:591-592
             const uint32_t rw = lower ? drs_w : sc.steady_rw;
             const uint32_t rh = lower ? drs_h : sc.steady_rh;
-            const double ms = evalTimed(sc.warmup_frames + sc.steady_frames + i, rw, rh, switched);
-            drs_ms.push_back(ms);
-            csv << "drs," << i << "," << rw << "," << rh << "," << switched << "," << std::fixed << std::setprecision(6) << ms << "\n";
+            const TimedEvalResult tr = evalTimed(sc.warmup_frames + sc.steady_frames + i, rw, rh, switched);
+            csv << "drs," << i << "," << rw << "," << rh << "," << switched << ","
+                << HexU32(static_cast<uint32_t>(tr.rc)) << "," << std::fixed << std::setprecision(6) << tr.gpu_ms << "\n";
+            if (!NVSDK_NGX_SUCCEED(tr.rc))
+            {
+                drs_status = "unsupported";
+                drs_error = tr.rc;
+                drs_failed_idx = static_cast<int>(i);
+                std::printf("[WARN] %s %s: DRS subrect %ux%u rejected at drs_index=%u (%s); steady 240f preserved, continuing.\n",
+                            sc.id.c_str(), tag.c_str(), rw, rh, i, HexU32(static_cast<uint32_t>(tr.rc)).c_str());
+                break;
+            }
+            drs_ms.push_back(tr.gpu_ms);
         }
+        csv.flush();
     }
     const uint64_t vram_drs_end = sess.dx.QueryProcessLocalVramBytes();
 
@@ -1771,37 +1915,12 @@ void RunTimingCaseRound(NgxSession& sess, const SuiteCase& sc, uint32_t round_id
     sess.ngx.release_feature(handle);
 #endif
 
-    const DistStats st_s = ComputeDistStats(steady_ms);
+    writeSummaryJson(drs_status, drs_error, drs_failed_idx, drs_ms, vram_drs_end);
     const DistStats st_d = ComputeDistStats(drs_ms);
-    auto toMb = [](uint64_t b) { return static_cast<double>(b) / (1024.0 * 1024.0); };
-    const double delta_steady_mb = vram_steady_end > vram_before_create ? toMb(vram_steady_end - vram_before_create) : 0.0;
 
-    std::ofstream js(case_dir / ("timing_summary_" + tag + ".json"), std::ios::binary);
-    js << std::fixed << std::setprecision(4)
-       << "{\n"
-       << "  \"case_id\": \"" << sc.id << "\",\n"
-       << "  \"round\": " << round_idx << ",\n"
-       << "  \"resolution\": \"" << sc.steady_rw << "x" << sc.steady_rh << "->" << sc.out_w << "x" << sc.out_h << "\",\n"
-       << "  \"steady_gpu_ms\": { \"mean\": " << st_s.mean << ", \"median\": " << st_s.median
-       << ", \"p95\": " << st_s.p95 << ", \"p99\": " << st_s.p99
-       << ", \"min\": " << st_s.min_v << ", \"max\": " << st_s.max_v << ", \"stddev\": " << st_s.stddev << " },\n"
-       << "  \"drs_gpu_ms\": { \"mean\": " << st_d.mean << ", \"median\": " << st_d.median
-       << ", \"p95\": " << st_d.p95 << ", \"p99\": " << st_d.p99
-       << ", \"min\": " << st_d.min_v << ", \"max\": " << st_d.max_v << ", \"stddev\": " << st_d.stddev << " },\n"
-       << "  \"vram_mb\": {\n"
-       << "    \"dxgi_process_local_before_create\": " << toMb(vram_before_create) << ",\n"
-       << "    \"dxgi_process_local_after_create\": " << toMb(vram_after_create) << ",\n"
-       << "    \"dxgi_process_local_after_first_eval\": " << toMb(vram_after_first_eval) << ",\n"
-       << "    \"dxgi_process_local_steady_end\": " << toMb(vram_steady_end) << ",\n"
-       << "    \"dxgi_process_local_drs_end\": " << toMb(vram_drs_end) << ",\n"
-       << "    \"dxgi_process_local_delta_steady\": " << delta_steady_mb << ",\n"
-       << "    \"ngx_dlssd_get_stats_mb\": " << toMb(ngx_stats_vram) << ",\n"
-       << "    \"ngx_scratch_buffer_mb\": " << toMb(scratch_bytes) << "\n"
-       << "  }\n"
-       << "}\n";
-
-    std::printf("[TIMING %s %s] steady median=%.3f ms (mean=%.3f, p95=%.3f) | DRS median=%.3f ms | VRAM delta=%.1f MB (NGX stats=%.1f MB)\n",
-                sc.id.c_str(), tag.c_str(), st_s.median, st_s.mean, st_s.p95, st_d.median, delta_steady_mb, toMb(ngx_stats_vram));
+    std::printf("[TIMING %s %s] steady median=%.3f ms (mean=%.3f, p95=%.3f) | DRS=%s (median=%.3f ms) | VRAM delta=%.1f MB (NGX stats=%.1f MB)\n",
+                sc.id.c_str(), tag.c_str(), st_s.median, st_s.mean, st_s.p95,
+                drs_status.c_str(), st_d.median, delta_steady_mb, toMb(ngx_stats_vram));
 }
 
 void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const fs::path& out_dir)
@@ -1832,6 +1951,7 @@ void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const
 
         if (NVSDK_NGX_SUCCEED(cr) && handle != nullptr)
         {
+            sess.EnsureLoadedDlssdVerified(sc.preset_hint);
             for (uint32_t f = 0; f < sc.steady_frames; ++f)
             {
                 rr_ref::FrameScalarParams fp {};
@@ -1928,6 +2048,8 @@ void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const
                     diff_halfs, max_ulp, psnr01);
     }
     js << "  ]\n}\n";
+    Require(sess.dll_verified_after_create || sess.allow_dll_mismatch,
+            "No probe succeeded CreateFeature to verify in-process nvngx_dlssd.dll!");
 }
 
 void RunProfileTargetMode(
@@ -1936,6 +2058,7 @@ void RunProfileTargetMode(
     const fs::path& dlssd_path,
     const fs::path& loader_path,
     const fs::path& out_dir,
+    bool allow_dll_mismatch,
     uint32_t vendor_id)
 {
     uint32_t rw = 1280, rh = 720, ow = 1920, oh = 1080;
@@ -1946,7 +2069,7 @@ void RunProfileTargetMode(
 
     fs::create_directories(out_dir);
     NgxSession sess;
-    sess.Start(dlssd_path, loader_path, out_dir, vendor_id);
+    sess.Start(dlssd_path, loader_path, out_dir, vendor_id, allow_dll_mismatch);
 
     rr_ref::CpuFrameBuffers cpu;
     cpu.Allocate(rw, rh, ow, oh, 0u);
@@ -1958,7 +2081,8 @@ void RunProfileTargetMode(
 
     NVSDK_NGX_Handle* handle = nullptr;
     const NVSDK_NGX_Result cr = CreateRrFeature(sess.ngx, sess.dx, sess.params, rw, rh, ow, oh, pq, 6u, &handle);
-    Require(NVSDK_NGX_SUCCEED(cr) && handle != nullptr, "Profile CreateFeature failed");
+    Require(NVSDK_NGX_SUCCEED(cr) && handle != nullptr, "Profile CreateFeature failed: " + HexU32(static_cast<uint32_t>(cr)));
+    sess.EnsureLoadedDlssdVerified(6u, "env_manifest_" + target + ".json");
 
     // Best-effort CUDA profiler range hooks if nvcuda.dll is loaded in process by NGX
     using PFN_cuProfiler = int(__stdcall*)();
@@ -1988,7 +2112,7 @@ void RunProfileTargetMode(
 #endif
         if (is_target)
             sess.dx.cl->EndEvent();
-        Require(NVSDK_NGX_SUCCEED(er), "Profile EvaluateFeature failed");
+        Require(NVSDK_NGX_SUCCEED(er), "Profile EvaluateFeature failed: " + HexU32(static_cast<uint32_t>(er)));
         sess.dx.ExecuteAndSync("Profile EvaluateFeature");
 
         if (is_target && cu_stop) cu_stop();
@@ -2021,8 +2145,8 @@ void PrintUsage()
         "  ngx_rr_bench --dump-fixture-hashes <cases.json>\n"
         "  ngx_rr_bench --verify-fixtures <cases.json>\n"
         "  ngx_rr_bench --smoke --dlssd <nvngx_dlssd.dll> --out <dir> [--ngx-loader <path>] [--allow-dll-mismatch]\n"
-        "  ngx_rr_bench --pass <quality-core|timing-core|quality-ext|probes> --dlssd <nvngx_dlssd.dll> --out <dir> [--case <id>]\n"
-        "  ngx_rr_bench --profile-target <1080p_qual|4k_qual|4k_perf> --dlssd <nvngx_dlssd.dll> --out <dir> [--profile-frame 32]\n");
+        "  ngx_rr_bench --pass <quality-core|timing-core|quality-ext|probes> --dlssd <nvngx_dlssd.dll> --out <dir> [--case <id>] [--allow-dll-mismatch]\n"
+        "  ngx_rr_bench --profile-target <1080p_qual|4k_qual|4k_perf> --dlssd <nvngx_dlssd.dll> --out <dir> [--profile-frame 32] [--allow-dll-mismatch]\n");
 }
 
 } // namespace
@@ -2123,7 +2247,7 @@ try
         Require(!selected.empty(), "No suite cases matched --pass " + pass_name + (filter_case_id.empty() ? "" : (" --case " + filter_case_id)));
 
         NgxSession sess;
-        sess.Start(dlssd_path, loader_path, out_dir, vendor_id);
+        sess.Start(dlssd_path, loader_path, out_dir, vendor_id, allow_dll_mismatch);
 
         if (target_group == PassGroup::Probes)
         {
@@ -2148,7 +2272,7 @@ try
     if (!profile_target.empty())
     {
         Require(!dlssd_path.empty(), "--profile-target requires --dlssd <path-to-nvngx_dlssd.dll>");
-        RunProfileTargetMode(profile_target, profile_frame, dlssd_path, loader_path, out_dir, vendor_id);
+        RunProfileTargetMode(profile_target, profile_frame, dlssd_path, loader_path, out_dir, allow_dll_mismatch, vendor_id);
     }
 
     return 0;

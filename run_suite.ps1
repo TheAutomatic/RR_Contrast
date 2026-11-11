@@ -46,10 +46,12 @@ $CommonArgs = @("--dlssd", $AbsDlssd)
 if ($NgxLoaderPath -ne "") {
     $CommonArgs += @("--ngx-loader", (Resolve-Path $NgxLoaderPath).Path)
 }
+if ($AllowDllMismatch) {
+    $CommonArgs += "--allow-dll-mismatch"
+}
 
 Write-Host "=== [1/6] Stage 1: Smoke Test & DLL Identity Check ===" -ForegroundColor Cyan
 $SmokeArgs = @("--smoke") + $CommonArgs + @("--out", (Join-Path $AbsOut "01_smoke"))
-if ($AllowDllMismatch) { $SmokeArgs += "--allow-dll-mismatch" }
 & $ExePath @SmokeArgs
 if ($LASTEXITCODE -ne 0) { throw "Stage 1 Smoke test failed. Inspect 01_smoke/env_manifest.json before continuing." }
 

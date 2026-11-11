@@ -20,18 +20,18 @@ A recurring pitfall in cross-machine GPU parity tests is subtle CPU-side input d
 
 ### 2.1 Clean-Room Header vs Official NGX SDK
 - By default, `src/ngx_rr_bench.cpp` compiles standalone using `include/rr_ngx_abi.hpp` (parameter keys, enums, and defaults verified 1:1 against public [`NVIDIA/DLSS v310.9.1`](https://github.com/NVIDIA/DLSS/tree/v310.9.1/include) `nvsdk_ngx_defs.h`, `nvsdk_ngx_defs_dlssd.h`, and `nvsdk_ngx_helpers_dlssd_d3d.h`) and dynamically loads the driver's `_nvngx.dll` via `HKLM\SYSTEM\CurrentControlSet\Services\nvlddmkm\NGXCore\NGXPath` (or DriverStore fallback / `--ngx-loader`).
-- **Optional Static SDK Build**: If preferred, clone `NVIDIA/DLSS` (`v310.9.1`) locally and build with:
+- **Optional Static SDK Build**: Default dynamic loading requires zero external headers or `.lib` files and is the recommended entry point. If preferred, a full `NVIDIA/DLSS` (`v310.9.1`) SDK checkout (with `include/` and `lib/Windows_x86_64/rel/nvsdk_ngx_s.lib`) can also be compiled with:
   ```powershell
   .\build.ps1 -NgxSdkDir "C:\path\to\DLSS"
   ```
-  which defines `RR_USE_OFFICIAL_NGX_SDK=1` and links `nvsdk_ngx_s.lib`.
+  which defines `RR_USE_OFFICIAL_NGX_SDK=1` (`<nvsdk_ngx.h>` + `<nvsdk_ngx_defs_dlssd.h>`).
 
-### 2.2 Whole-File DLL Hash vs Internal Slice Hash
-`01_smoke/env_manifest.json` records **both** expected and actual in-process module metadata via `GetModuleHandleW(L"nvngx_dlssd.dll")`:
+### 2.2 Whole-File DLL Hash vs Internal Slice Hash (Enforced Across All Processes)
+Every independent runner invocation (`--smoke`, `--pass`, `--profile-target`) writes an `env_manifest.json` in its stage directory and enforces **both** the requested `--dlssd` file SHA-256 and the in-process `GetModuleHandleW(L"nvngx_dlssd.dll")` SHA-256 right after the first `CreateFeature` against `310.9.1.0`:
 - **Whole PE file (`nvngx_dlssd.dll` `310.9.1.0`, `48,343,664` B)** SHA-256:
   `4bc7ea5fcb2f32cf86bc2cb072e8d2860914a0be511cbdcb2fc206c1d9d83b80`
 - *(Note for OpenRR cross-reference: `c7a2361f990391f3589601619d77f15ce92d46ad2a459235f9cfca5913fad05a` in OpenRR's `dlssd_layout_310_9_1_0.inc` is the hash of extracted `rr2` weight/immediate/LUT slices only, **not** the whole DLL file.)*
-- If NVIDIA App / driver DRS override redirects `nvngx_dlssd.dll` to another file, `--smoke` catches the SHA-256 mismatch immediately.
+- If either the passed file is a wrong version or NVIDIA App / driver DRS override redirects `nvngx_dlssd.dll` in any stage process, the runner aborts immediately unless `--allow-dll-mismatch` (`-AllowDllMismatch`) is explicitly passed.
 
 ### 2.3 Create & Evaluate Parameters
 - `DLSS.Feature.Create.Flags = 0x4B` (`IsHDR | MVLowRes | DepthInverted | AutoExposure`)
@@ -53,9 +53,9 @@ A recurring pitfall in cross-machine GPU parity tests is subtle CPU-side input d
 
 ### 3.2 DRS Schedule in Quality Passes (`80` frames)
 - Frames `0..63`: Steady `(steady_rw, steady_rh)`, `Reset = 1` on `f000`, `Reset = 0` on `f001..f063`.
-- Frames `64..71`: Alternates `85%` (`64..67`) and `100%` (`68..71`) **with `Reset = 0`** to test whether direct NGX `310.9.1.0` accepts dynamic subrect changes without reset. If NGX returns an error code, `ngx_result_hex` is logged and the runner falls back to feature recreate (`recreated = 1`) without aborting.
+- Frames `64..71`: Alternates `85%` (`64..67`) and `100%` (`68..71`) **with `Reset = 0`** to test whether direct NGX `310.9.1.0` accepts dynamic subrect changes without reset. If NGX returns an error code, `initial_ngx_result_hex` and `initial_input_sha256` are preserved and the runner falls back to feature recreate (`recreated = 1`, `effective_reset = 1`, recomputed `effective_input_sha256`) without aborting.
 - Frames `72..79`: Alternates `85%` (`72..75`) and `100%` (`76..79`) **with `Reset = 1` on switch frames (`72`, `76`)**, matching `openrr_bench` and Streamline's resize+reset guidance.
-- Raw pitch-stripped `.rgba16f` (`out_w * out_h * 8` bytes, little-endian `half4`) is saved only for key frames (`K10`: `0, 1, 2, 4, 8, 15, 31, 63, 67, 75`), while `frames_manifest.csv` logs `input_sha256`, `output_sha256`, `output_fnv1a64`, `non_finite`, and luminance stats for **every** frame.
+- Raw pitch-stripped `.rgba16f` (`out_w * out_h * 8` bytes, little-endian `half4`) is saved only for key frames (`K10`: `0, 1, 2, 4, 8, 15, 31, 63, 67, 75`), while `frames_manifest.csv` logs both initial attempt (`initial_reset`, `initial_ngx_result_hex`, `initial_input_sha256`) and effective execution (`recreated`, `effective_reset`, `effective_ngx_result_hex`, `effective_input_sha256`), plus `output_sha256`, `output_fnv1a64`, `non_finite`, and luminance stats for **every** frame.
 
 ### 3.3 Non-Blocking Single-Variable Probes (`05_probes`)
 Each probe runs `16` frames (`0..15`) on `S1` (`1080p Quality`) changing **one** variable relative to `P00_baseline_s1_g0`, catching any `NVSDK_NGX_FAILED` code into `probes_summary.json` (`supported_active`, `supported_noop`, or `unsupported`):
@@ -77,7 +77,7 @@ Each probe runs `16` frames (`0..15`) on `S1` (`1080p Quality`) changing **one**
 
 1. **Process & Readback Isolation**: `03_timing_core` runs in a dedicated process with **zero `READBACK` heap copies** of output textures and uses static `S0 / g0_core7` so input uploads never occur during timed loops.
 2. **Timestamp Scope**: Single `D3D12_COMMAND_LIST_TYPE_DIRECT` queue; `EndQuery(TIMESTAMP, 0)` immediately before `EvaluateFeature` and `EndQuery(TIMESTAMP, 1)` + `ResolveQueryData` immediately after in the same command list, followed by `ExecuteCommandLists` + fence wait (matching `openrr_bench`).
-3. **Warmup & Rounds**: 3.0s GPU pre-soak -> `120` warmup frames -> `240` steady frames -> `64` DRS frames (`r1`, `r2` for `1080p Q`, `1440p Q`, `4K Q`, `4K Perf`; `r1` for `1080p DLAA`, `4K UltraPerf`), accompanied by background `nvidia-smi` clock/power/temp CSV logging. *(Locked-clock runs via `nvidia-smi -lgc` are optional, not required.)*
+3. **Warmup, Steady Flush & Non-Blocking DRS**: 3.0s GPU pre-soak -> `120` warmup frames -> `240` steady frames -> `64` DRS frames (`r1`, `r2` for `1080p Q`, `1440p Q`, `4K Q`, `4K Perf`; `r1` for `1080p DLAA`, `4K UltraPerf`), accompanied by background `nvidia-smi` clock/power/temp CSV logging. Steady `240`-frame stats are flushed to `timing_summary_rX.json` **before** the DRS phase runs; if NGX rejects DRS subrects, `drs_status = "unsupported"` and `drs_error_hex` are recorded non-fatally and remaining resolutions continue uninterrupted. *(Locked-clock runs via `nvidia-smi -lgc` are optional, not required.)*
 4. **VRAM Metrics**: Logs both:
    - **DXGI Process-Local `CurrentUsage`** (`IDXGIAdapter3::QueryVideoMemoryInfo` on `DXGI_MEMORY_SEGMENT_GROUP_LOCAL`) at `before_create`, `after_create`, `after_first_eval`, `steady_end`, `drs_end`.
    - **NGX Reported Feature Stats** (`DLSSDGetStatsCallback -> SizeInBytes` and `GetScratchBufferSize`).

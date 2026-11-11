@@ -163,17 +163,26 @@ struct NVSDK_NGX_Parameter
 {
     const NVSDK_NGX_ParameterVtbl* vtbl;
 
-    void SetVoidPtr(const char* n, void* v)           { vtbl->SetVoidPtr(this, n, v); }
-    void SetD3D12Resource(const char* n, ID3D12Resource* v) { vtbl->SetD3D12Resource(this, n, v); }
-    void SetInt(const char* n, int v)                 { vtbl->SetInt(this, n, v); }
-    void SetUInt(const char* n, unsigned int v)       { vtbl->SetUInt(this, n, v); }
-    void SetFloat(const char* n, float v)             { vtbl->SetFloat(this, n, v); }
+    // Overloaded Set/Get matching public NVIDIA/DLSS v310.9.1 nvsdk_ngx_params.h
+    void Set(const char* n, unsigned long long v) { vtbl->SetULL(this, n, v); }
+    void Set(const char* n, float v)              { vtbl->SetFloat(this, n, v); }
+    void Set(const char* n, double v)             { vtbl->SetDouble(this, n, v); }
+    void Set(const char* n, unsigned int v)       { vtbl->SetUInt(this, n, v); }
+    void Set(const char* n, int v)                { vtbl->SetInt(this, n, v); }
+    void Set(const char* n, ID3D11Resource* v)    { vtbl->SetD3D11Resource(this, n, v); }
+    void Set(const char* n, ID3D12Resource* v)    { vtbl->SetD3D12Resource(this, n, v); }
+    void Set(const char* n, void* v)              { vtbl->SetVoidPtr(this, n, v); }
 
-    NVSDK_NGX_Result GetVoidPtr(const char* n, void** v) const     { return vtbl->GetVoidPtr(this, n, v); }
-    NVSDK_NGX_Result GetInt(const char* n, int* v) const           { return vtbl->GetInt(this, n, v); }
-    NVSDK_NGX_Result GetUInt(const char* n, unsigned int* v) const { return vtbl->GetUInt(this, n, v); }
-    NVSDK_NGX_Result GetULL(const char* n, unsigned long long* v) const { return vtbl->GetULL(this, n, v); }
-    void Reset()                                                   { vtbl->Reset(this); }
+    NVSDK_NGX_Result Get(const char* n, unsigned long long* v) const { return vtbl->GetULL(this, n, v); }
+    NVSDK_NGX_Result Get(const char* n, float* v) const              { return vtbl->GetFloat(this, n, v); }
+    NVSDK_NGX_Result Get(const char* n, double* v) const             { return vtbl->GetDouble(this, n, v); }
+    NVSDK_NGX_Result Get(const char* n, unsigned int* v) const       { return vtbl->GetUInt(this, n, v); }
+    NVSDK_NGX_Result Get(const char* n, int* v) const                { return vtbl->GetInt(this, n, v); }
+    NVSDK_NGX_Result Get(const char* n, ID3D11Resource** v) const    { return vtbl->GetD3D11Resource(this, n, v); }
+    NVSDK_NGX_Result Get(const char* n, ID3D12Resource** v) const    { return vtbl->GetD3D12Resource(this, n, v); }
+    NVSDK_NGX_Result Get(const char* n, void** v) const              { return vtbl->GetVoidPtr(this, n, v); }
+
+    void Reset() { vtbl->Reset(this); }
 };
 
 static_assert(sizeof(NVSDK_NGX_Parameter) == sizeof(void*), "NVSDK_NGX_Parameter must be a single vtable pointer");
