@@ -6,6 +6,7 @@ param(
     [string]$OutDir = "results",
     [string]$NgxLoaderPath = "",
     [switch]$AllowDllMismatch,
+    [switch]$ProcessExitTeardown,
     [switch]$SkipExt,
     [switch]$SkipProbes,
     [switch]$RunNsight
@@ -43,6 +44,7 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
 }
 
 $CommonArgs = @("--dlssd", $AbsDlssd)
+if ($ProcessExitTeardown) { $CommonArgs += "--process-exit-teardown" }
 if ($NgxLoaderPath -ne "") {
     $CommonArgs += @("--ngx-loader", (Resolve-Path $NgxLoaderPath).Path)
 }

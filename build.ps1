@@ -4,6 +4,7 @@ param(
     [ValidateSet("auto", "msvc", "mingw")]
     [string]$Compiler = "auto",
     [string]$NgxSdkDir = "",
+    [string]$PrebuiltExe = "",
     [switch]$SkipVerify
 )
 
@@ -66,7 +67,7 @@ function Find-VsDevBatch {
 
 $useMsvc = $false
 $vcvars = $null
-if ($Compiler -eq "auto" -or $Compiler -eq "msvc") {
+if (($PrebuiltExe -eq "") -and ($Compiler -eq "auto" -or $Compiler -eq "msvc")) {
     if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
         $useMsvc = $true
     } else {
@@ -76,7 +77,11 @@ if ($Compiler -eq "auto" -or $Compiler -eq "msvc") {
     }
 }
 
-if ($useMsvc) {
+if ($PrebuiltExe -ne "") {
+    $Prepared = (Resolve-Path -LiteralPath $PrebuiltExe).Path
+    Copy-Item -LiteralPath $Prepared -Destination $OutExe -Force
+    Write-Host "[BUILD] Using locally audited cross-compiled x64 executable: $Prepared"
+} elseif ($useMsvc) {
     Write-Host "[BUILD] Compiling with MSVC x64..." -ForegroundColor Cyan
     $sdkFlags = ""
     $sdkLibs = ""

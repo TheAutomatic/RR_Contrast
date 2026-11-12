@@ -51,6 +51,8 @@ namespace fs = std::filesystem;
 namespace
 {
 
+bool g_process_exit_teardown = false;
+
 inline constexpr const char* kExpectedDlssdVersion = "310.9.1.0";
 inline constexpr uint64_t kExpectedDlssdBytes = 48343664ull;
 inline constexpr const char* kExpectedDlssdSha256 =
@@ -60,7 +62,18 @@ inline constexpr const char* kOpenRrWeightSliceNote =
     "c7a2361f990391f3589601619d77f15ce92d46ad2a459235f9cfca5913fad05a";
 
 constexpr D3D12_RESOURCE_STATES kSrvReadState = static_cast<D3D12_RESOURCE_STATES>(
-    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    static_cast<unsigned>(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) |
+    static_cast<unsigned>(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+
+void RuntimeTrace(const char* message) noexcept
+{
+    HANDLE f = CreateFileW(L"rr_runtime_trace.log", FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD n = 0; WriteFile(f, message, static_cast<DWORD>(std::strlen(message)), &n, nullptr);
+        WriteFile(f, "\r\n", 2, &n, nullptr); CloseHandle(f);
+    }
+}
 
 void Require(bool ok, const std::string& msg)
 {
@@ -587,11 +600,14 @@ void VerifyFixturesAgainstJson(const fs::path& json_path)
 struct NgxApi
 {
 #ifndef RR_USE_OFFICIAL_NGX_SDK
+    using PFN_Init_ProjectID = NVSDK_NGX_Result(RR_NGX_MSABI*)(
+        const char*, NVSDK_NGX_EngineType, const char*, const wchar_t*, ID3D12Device*,
+        NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
     using PFN_Init_Ext = NVSDK_NGX_Result(RR_NGX_MSABI*)(
         unsigned long long, const wchar_t*, ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*);
     using PFN_Init_Pub = NVSDK_NGX_Result(RR_NGX_MSABI*)(
         unsigned long long, const wchar_t*, ID3D12Device*, const NVSDK_NGX_FeatureCommonInfo*, NVSDK_NGX_Version);
-    using PFN_Shutdown1 = NVSDK_NGX_Result(RR_NGX_MSABI*)(ID3D12Device*);
+    using PFN_Shutdown1 = NVSDK_NGX_Result(RR_NGX_MSABI*)(ID3D12Device*, unsigned int*);
     using PFN_Shutdown0 = NVSDK_NGX_Result(RR_NGX_MSABI*)();
     using PFN_GetCapParams = NVSDK_NGX_Result(RR_NGX_MSABI*)(NVSDK_NGX_Parameter**);
     using PFN_AllocParams = NVSDK_NGX_Result(RR_NGX_MSABI*)(NVSDK_NGX_Parameter**);
@@ -605,6 +621,8 @@ struct NgxApi
 
     HMODULE mod = nullptr;
     fs::path loader_path;
+    PFN_Init_ProjectID init_project_id = nullptr;
+    bool initialized = false;
     PFN_Init_Ext init_ext = nullptr;
     PFN_Init_Pub init_pub = nullptr;
     PFN_Shutdown1 shutdown1 = nullptr;
@@ -626,6 +644,7 @@ struct NgxApi
         auto proc = [&](const char* sym) -> void* {
             return reinterpret_cast<void*>(GetProcAddress(mod, sym));
         };
+        init_project_id = reinterpret_cast<PFN_Init_ProjectID>(proc("NVSDK_NGX_D3D12_Init_ProjectID"));
         init_ext = reinterpret_cast<PFN_Init_Ext>(proc("NVSDK_NGX_D3D12_Init_Ext"));
         init_pub = reinterpret_cast<PFN_Init_Pub>(proc("NVSDK_NGX_D3D12_Init"));
         shutdown1 = reinterpret_cast<PFN_Shutdown1>(proc("NVSDK_NGX_D3D12_Shutdown1"));
@@ -638,16 +657,19 @@ struct NgxApi
         evaluate_feature = reinterpret_cast<PFN_EvaluateFeature>(proc("NVSDK_NGX_D3D12_EvaluateFeature"));
         release_feature = reinterpret_cast<PFN_ReleaseFeature>(proc("NVSDK_NGX_D3D12_ReleaseFeature"));
 
-        Require((init_ext || init_pub) && (get_cap_params || alloc_params) && destroy_params &&
+        Require(init_project_id && shutdown1 && (get_cap_params || alloc_params) && destroy_params &&
                 create_feature && evaluate_feature && release_feature,
                 "NGX loader missing required D3D12 exports: " + WideToUtf8(loader_path.wstring()));
     }
 
     NVSDK_NGX_Result Init(unsigned long long app_id, const wchar_t* app_data, ID3D12Device* dev, const NVSDK_NGX_FeatureCommonInfo* info)
     {
-        if (init_ext)
-            return init_ext(app_id, app_data, dev, NVSDK_NGX_Version_API, info);
-        return init_pub(app_id, app_data, dev, info, NVSDK_NGX_Version_API);
+        (void)app_id;
+        // Driver-core ProjectID ABI: version precedes FeatureCommonInfo.
+        const auto r = init_project_id("46fc1417-66bd-5517-943a-d1993498b797", NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+            "RR_Contrast_reference_v1", app_data, dev, NVSDK_NGX_Version_API, info);
+        initialized = NVSDK_NGX_SUCCEED(r);
+        return r;
     }
 
     NVSDK_NGX_Result GetParams(NVSDK_NGX_Parameter** out)
@@ -665,8 +687,13 @@ struct NgxApi
 
     void Shutdown(ID3D12Device* dev)
     {
-        if (shutdown1) shutdown1(dev);
-        else if (shutdown0) shutdown0();
+        if (initialized && shutdown1) {
+            unsigned int remaining_instances = 0;
+            RuntimeTrace("[CLEANUP] Shutdown1 driver call begin");
+            shutdown1(dev, &remaining_instances);
+            RuntimeTrace("[CLEANUP] Shutdown1 driver call returned");
+            initialized = false;
+        }
     }
 #else
     fs::path loader_path = L"static_nvsdk_ngx_sdk";
@@ -711,6 +738,7 @@ struct D3dContext
 
     ~D3dContext()
     {
+        RuntimeTrace("[CLEANUP] D3dContext destructor body");
         if (fence_event) CloseHandle(fence_event);
     }
 
@@ -1320,6 +1348,7 @@ void WriteEnvManifest(
         << "    \"loader_version\": \"" << JsonEscape(fs::exists(ngx.loader_path) ? QueryPeFileVersion(ngx.loader_path) : "static_sdk") << "\",\n"
         << "    \"supersampling_denoising_available\": " << rr_available << ",\n"
         << "    \"requested_preset_hint\": " << preset_hint << ",\n"
+        << "    \"process_teardown_forced\": " << (g_process_exit_teardown ? "true" : "false") << ",\n"
         << "    \"routing_verification_status\": \"requested_preset_recorded_use_nsys_cuda_trace_for_kernel_evidence\"\n"
         << "  },\n"
         << "  \"dlssd_dll\": {\n"
@@ -1387,8 +1416,11 @@ struct NgxSession
         ngx_log_dir = session_out_dir / "ngx_appdata";
         fs::create_directories(ngx_log_dir);
 
+        RuntimeTrace("[INIT] D3D12 begin");
         dx.Init(vendor_id);
+        RuntimeTrace("[INIT] D3D12 ready, NGX Load begin");
         ngx.Load(loader_path);
+        RuntimeTrace("[INIT] NGX loader ready");
 
         const std::wstring dll_dir_w = abs_dlssd.parent_path().wstring();
         const wchar_t* search_paths[] = {dll_dir_w.c_str()};
@@ -1396,12 +1428,16 @@ struct NgxSession
         fci.PathListInfo.Path = search_paths;
         fci.PathListInfo.Length = 1u;
 
+        RuntimeTrace("[INIT] NGX Init begin");
         const NVSDK_NGX_Result init_res = ngx.Init(0x5252434E54525354ull, ngx_log_dir.c_str(), dx.dev.Get(), &fci);
         Require(NVSDK_NGX_SUCCEED(init_res), "NVSDK_NGX_D3D12_Init failed: " + HexU32(static_cast<uint32_t>(init_res)));
 
+        RuntimeTrace("[INIT] NGX Init success, GetParams begin");
         const NVSDK_NGX_Result pr = ngx.GetParams(&params);
         Require(NVSDK_NGX_SUCCEED(pr) && params != nullptr, "GetCapabilityParameters failed: " + HexU32(static_cast<uint32_t>(pr)));
+        RuntimeTrace("[INIT] GetParams success, Get availability begin");
         params->Get(NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &rr_available);
+        std::fprintf(stderr,"[INIT] availability=%d\n",rr_available);
     }
 
     const LoadedDlssdInfo& EnsureLoadedDlssdVerified(uint32_t preset_hint, const std::string& manifest_filename = "env_manifest.json")
@@ -1440,12 +1476,19 @@ struct NgxSession
 #ifdef RR_USE_OFFICIAL_NGX_SDK
             ngx.DestroyParams(params);
 #else
+            RuntimeTrace("[CLEANUP] destroy params begin");
             ngx.destroy_params(params);
+            RuntimeTrace("[CLEANUP] destroy params done");
 #endif
             params = nullptr;
         }
-        if (dx.dev)
+        if (g_process_exit_teardown) {
+            RuntimeTrace("[CLEANUP] driver Shutdown skipped; explicit process-isolation teardown policy");
+        } else if (dx.dev) {
+            RuntimeTrace("[CLEANUP] Shutdown begin");
             ngx.Shutdown(dx.dev.Get());
+            RuntimeTrace("[CLEANUP] Shutdown done");
+        }
     }
 };
 
@@ -2154,6 +2197,8 @@ void PrintUsage()
 int main()
 try
 {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     int argc = 0;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!wargv || argc <= 1)
@@ -2194,6 +2239,7 @@ try
         else if (a == "--dump-fixture-hashes") dump_hashes_path = Utf8ToPath(next());
         else if (a == "--verify-fixtures") verify_hashes_path = Utf8ToPath(next());
         else if (a == "--smoke") do_smoke = true;
+        else if (a == "--process-exit-teardown") g_process_exit_teardown = true;
         else if (a == "--allow-dll-mismatch") allow_dll_mismatch = true;
         else if (a == "--pass") pass_name = next();
         else if (a == "--case") filter_case_id = next();
@@ -2275,10 +2321,16 @@ try
         RunProfileTargetMode(profile_target, profile_frame, dlssd_path, loader_path, out_dir, allow_dll_mismatch, vendor_id);
     }
 
+    if (g_process_exit_teardown) {
+        RuntimeTrace("[CLEANUP] all task outputs complete; terminating only current runner with exit=0");
+        std::fflush(nullptr);
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
     return 0;
 }
 catch (const std::exception& e)
 {
     std::fprintf(stderr, "[ERROR] ngx_rr_bench: %s\n", e.what());
+    if (g_process_exit_teardown) { std::fflush(nullptr); TerminateProcess(GetCurrentProcess(), 1); }
     return 1;
 }
