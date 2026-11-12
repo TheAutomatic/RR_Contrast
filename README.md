@@ -39,4 +39,9 @@ Confirms:
 ### 5. Package Deliverable Archive
 Compress `results\` with `zstd` or `7-Zip` (`results_rtx5090_rr310910.7z` or `.tar.zst`, ~1.8–2.2 GB) and share via cloud drive together with any local `git diff` if adjustments were made.
 
-See [`docs/SPEC.md`](docs/SPEC.md) for full protocol details, parameter/format tables, DRS & probe semantics, and Nsight instructions.
+### 6. `v2_motion` One-Shot Supplement (`~10–15s`, `~420 MB` raw / `~200 MB` compressed)
+While `--suite v1` (default) preserves all 76 `rr_contrast_v1` input hashes 1:1, `--suite v2_motion` (`cases\cases_v2_motion.json`) runs the active-motion `S1`/`S2` supplement + 16 targeted guide/ABI micro-probes (`P00..P17`):
+```powershell
+.\run_suite_v2_motion.ps1 -DlssdPath "C:\path\to\nvngx_dlssd.dll" -OutDir results_v2_motion -ProcessExitTeardown
+```
+See [`docs/V2_MOTION_AND_OPENRR_REVIEW.md`](docs/V2_MOTION_AND_OPENRR_REVIEW.md) for the full root-cause breakdown, 20-case matrix, and OpenRR Stage 2/3 cross-review guide, and [`docs/SPEC.md`](docs/SPEC.md) for `v1` protocol details.

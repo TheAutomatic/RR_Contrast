@@ -119,5 +119,11 @@ if ($LASTEXITCODE -ne 0) { throw "Self-test failed!" }
 $CasesJson = Join-Path $RepoRoot "cases\cases.json"
 if ((-not $SkipVerify) -and (Test-Path $CasesJson)) {
     & $OutExe --verify-fixtures $CasesJson
-    if ($LASTEXITCODE -ne 0) { throw "Fixture input hash verification failed!" }
+    if ($LASTEXITCODE -ne 0) { throw "Fixture input hash verification failed (v1)!" }
+}
+
+$CasesV2Json = Join-Path $RepoRoot "cases\cases_v2_motion.json"
+if ((-not $SkipVerify) -and (Test-Path $CasesV2Json)) {
+    & $OutExe --suite v2_motion --verify-fixtures $CasesV2Json
+    if ($LASTEXITCODE -ne 0) { throw "Fixture input hash verification failed (v2_motion)!" }
 }

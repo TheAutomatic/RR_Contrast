@@ -26,6 +26,18 @@ namespace rr_ref
 {
 
 inline constexpr const char* kFixtureVersion = "rr_contrast_v1";
+inline constexpr const char* kFixtureVersionV2Motion = "rr_contrast_v2_motion";
+
+enum class FixtureSuite : uint32_t
+{
+    V1 = 0,
+    V2_Motion = 1,
+};
+
+inline const char* FixtureVersionForSuite(FixtureSuite s) noexcept
+{
+    return (s == FixtureSuite::V2_Motion) ? kFixtureVersionV2Motion : kFixtureVersion;
+}
 
 // Exact power-of-two scale 2^-20 = 1.0f / 1048576.0f (IEEE-754 bits 0x35800000).
 inline float Q20ToFloat(int32_t q20) noexcept
@@ -346,6 +358,22 @@ enum GuideMask : uint32_t
     kGuideResponsivity  = 1u << 5, // DLSSD.ResponsivityMask (R16F, [-1, 1])
     kGuideDepthOfField  = 1u << 6, // DLSSD.DepthOfFieldGuide (R16F)
     kGuideOmitHitDist   = 1u << 7, // Omit DLSSD.SpecularHitDistance
+    // v2_motion isolated & extended capability flags:
+    kGuideSssOnly       = 1u << 8, // DLSSD.ScreenSpaceSubsurfaceScatteringGuide (R16F) without CBT
+    kGuideCbtOnly       = 1u << 9, // DLSSD.ColorBeforeTransparency (RGBA16F, cbt != color) without SSS
+    kGuideUnpackedRough = 1u << 10 // GBuffer.Roughness (R16F) with Roughness.Mode = Unpacked (0) & normals.w = 0
+};
+
+struct V2FrameModifiers
+{
+    int32_t create_flags = 0x4B;      // Default: IsHDR(1) | MVLowRes(2) | DepthInverted(8) | AutoExposure(64)
+    uint32_t in_base_x = 0;           // Input Subrect.Base.X
+    uint32_t in_base_y = 0;           // Input Subrect.Base.Y
+    float mv_scale_x = 1.0f;          // NVSDK_NGX_Parameter_MV_Scale_X
+    float mv_scale_y = 1.0f;          // NVSDK_NGX_Parameter_MV_Scale_Y
+    int64_t mv_tex_scale_num = 1;     // Integer pre-multiplier applied to generated pixel MVs (e.g. -2 with mv_scale = -0.5f)
+    int32_t mv_jitter_delta_sign = 0;     // +1 adds +(prev_jitter - curr_jitter), -1 adds +(curr_jitter - prev_jitter)
+    bool manual_exposure_step = false;    // Steps Pre.Exposure=2.0f, Exposure.Scale=0.5f (f<8) -> 2.0f (f>=8)
 };
 
 // Exact integer Halton radical inverse in Q20 centered around 0: range [-524288, +524288] => [-0.5, +0.5].
@@ -382,6 +410,9 @@ struct FrameScalarParams
     uint32_t preset_hint = 6;       // NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F
     int32_t perf_quality = 2;       // NVSDK_NGX_PerfQuality_Value_MaxQuality
     int32_t create_flags = 0x4B;    // IsHDR(1) | MVLowRes(2) | DepthInverted(8) | AutoExposure(64)
+    uint32_t in_base_x = 0;         // Subrect.Base.X (0 in v1; configurable in v2_motion)
+    uint32_t in_base_y = 0;         // Subrect.Base.Y (0 in v1; configurable in v2_motion)
+    uint32_t roughness_mode = 1;    // 1 = Packed in Normals.w (default), 0 = Unpacked GBuffer.Roughness
     float jitter_x = 0.0f;
     float jitter_y = 0.0f;
     float mv_scale_x = 1.0f;
@@ -435,6 +466,7 @@ struct CpuFrameBuffers
     std::vector<uint16_t> spec_mvec_rg16f;      // 2 halves/px (4 B), rw x rh
     std::vector<uint16_t> resp_r16f;            // 1 half/px   (2 B), rw x rh (R16F in [-1, 1])
     std::vector<uint16_t> dof_r16f;             // 1 half/px   (2 B), rw x rh
+    std::vector<uint16_t> rough_r16f;           // 1 half/px   (2 B), rw x rh (unpacked GBuffer.Roughness)
 
     void Allocate(uint32_t max_rw, uint32_t max_rh, uint32_t target_ow, uint32_t target_oh, uint32_t all_guides_mask)
     {
@@ -458,14 +490,12 @@ struct CpuFrameBuffers
             transp_op_rgba16f.assign(n * 4, 0);
         }
         if (all_guides_mask & kGuideTranspMvecs) transp_mvec_rg16f.assign(size_t(out_w) * out_h * 2, 0);
-        if (all_guides_mask & kGuideSssAndCbt)
-        {
-            sss_r16f.assign(n, 0);
-            cbt_rgba16f.assign(n * 4, 0);
-        }
+        if (all_guides_mask & (kGuideSssAndCbt | kGuideSssOnly)) sss_r16f.assign(n, 0);
+        if (all_guides_mask & (kGuideSssAndCbt | kGuideCbtOnly)) cbt_rgba16f.assign(n * 4, 0);
         if (all_guides_mask & kGuideSpecularMvec) spec_mvec_rg16f.assign(n * 2, 0);
         if (all_guides_mask & kGuideResponsivity) resp_r16f.assign(n, 0);
         if (all_guides_mask & kGuideDepthOfField) dof_r16f.assign(n, 0);
+        if (all_guides_mask & kGuideUnpackedRough) rough_r16f.assign(n, 0);
     }
 };
 
@@ -528,8 +558,9 @@ inline void PopulateStaticS0(CpuFrameBuffers& b)
     }
 }
 
-// Populate scalar params and active (0..rw-1, 0..rh-1) region for frame_index.
+// Populate scalar params and active subrect region for frame_index.
 // For S0_BenchParity, static textures must already be populated via PopulateStaticS0(b).
+// When suite == FixtureSuite::V1 (default), behavior and SHA-256 hashes are 100% identical to Round-1 rr_contrast_v1.
 inline void PrepareFrame(
     SceneId scene,
     uint32_t guide_mask,
@@ -542,8 +573,12 @@ inline void PrepareFrame(
     uint32_t preset_hint,
     int32_t perf_quality,
     FrameScalarParams& params,
-    CpuFrameBuffers& b)
+    CpuFrameBuffers& b,
+    FixtureSuite suite = FixtureSuite::V1,
+    const V2FrameModifiers& v2_mod = {})
 {
+    const bool is_v2 = (suite == FixtureSuite::V2_Motion);
+
     params = {};
     params.frame_index = frame_idx;
     params.rw = rw;
@@ -553,11 +588,19 @@ inline void PrepareFrame(
     params.reset = reset;
     params.preset_hint = preset_hint;
     params.perf_quality = perf_quality;
-    params.create_flags = 0x4B; // IsHDR | MVLowRes | DepthInverted | AutoExposure
-    params.mv_scale_x = 1.0f;
-    params.mv_scale_y = 1.0f;
+    params.create_flags = is_v2 ? v2_mod.create_flags : 0x4B;
+    params.in_base_x = is_v2 ? v2_mod.in_base_x : 0u;
+    params.in_base_y = is_v2 ? v2_mod.in_base_y : 0u;
+    params.roughness_mode = (is_v2 && (guide_mask & kGuideUnpackedRough) != 0u) ? 0u : 1u;
+    params.mv_scale_x = is_v2 ? v2_mod.mv_scale_x : 1.0f;
+    params.mv_scale_y = is_v2 ? v2_mod.mv_scale_y : 1.0f;
     params.pre_exposure = 1.0f;
     params.exposure_scale = 1.0f;
+    if (is_v2 && v2_mod.manual_exposure_step)
+    {
+        params.pre_exposure = 2.0f;
+        params.exposure_scale = (frame_idx < 8u) ? 0.5f : 2.0f;
+    }
     FillCanonicalMatrices(params);
 
     if (scene == SceneId::S0_BenchParity)
@@ -570,11 +613,61 @@ inline void PrepareFrame(
     const uint32_t phase = (frame_idx & 15u) + 1u;
     const int32_t jx_q20 = HaltonCenteredQ20(phase, 2u);
     const int32_t jy_q20 = HaltonCenteredQ20(phase, 3u);
+    const uint32_t prev_phase = (frame_idx == 0u) ? phase : (((frame_idx - 1u) & 15u) + 1u);
+    const int32_t prev_jx_q20 = HaltonCenteredQ20(prev_phase, 2u);
+    const int32_t prev_jy_q20 = HaltonCenteredQ20(prev_phase, 3u);
     params.jitter_x = Q20ToFloat(jx_q20);
     params.jitter_y = Q20ToFloat(jy_q20);
 
     const bool is_hdr_stress = (scene == SceneId::S2_HdrStress);
     const uint32_t pitch_px = b.alloc_rw;
+    const int64_t t64 = static_cast<int64_t>(frame_idx);
+
+    if (is_v2)
+    {
+        // Fix #2: Per-frame Q20 camera translation in row-major world_to_view[12..14] (v_row * M).
+        // Activates reflection_mv(X, nrm) across curved sphere normals + hit_dist in enc0_attr,
+        // separating P00 (reflection_mv), P05 (SpecularMvec), and P10 (OPTF_NO_HIT mv_c fallback).
+        const int32_t cam_x_q20 = static_cast<int32_t>((t64 % 96ll) * 512ll);
+        const int32_t cam_y_q20 = static_cast<int32_t>(-((t64 % 96ll) * 256ll));
+        const int32_t cam_z_q20 = static_cast<int32_t>((t64 % 96ll) * 128ll);
+        params.world_to_view[12] = -Q20ToFloat(cam_x_q20);
+        params.world_to_view[13] = -Q20ToFloat(cam_y_q20);
+        params.world_to_view[14] = -Q20ToFloat(cam_z_q20);
+
+        // If testing non-zero input Subrect.Base (P14), fill the outer border with a bright magenta sentinel
+        // so ignoring Subrect.Base.X/Y produces an unmistakable >400k half-float difference vs P00.
+        if (params.in_base_x != 0u || params.in_base_y != 0u)
+        {
+            const size_t n_alloc = size_t(b.alloc_rw) * b.alloc_rh;
+            const uint16_t h_four = 0x4400u; // 4.0f
+            const uint16_t h_pos16 = 0x4C00u; // 16.0f
+            const uint16_t h_neg16 = 0xCC00u; // -16.0f
+            for (size_t i = 0; i < n_alloc; ++i)
+            {
+                b.color_rgba16f[4 * i + 0] = h_four;
+                b.color_rgba16f[4 * i + 1] = 0x0000u;
+                b.color_rgba16f[4 * i + 2] = h_four;
+                b.color_rgba16f[4 * i + 3] = 0x3C00u;
+                b.diffuse_rgba8[4 * i + 0] = 255u;
+                b.diffuse_rgba8[4 * i + 1] = 0u;
+                b.diffuse_rgba8[4 * i + 2] = 255u;
+                b.diffuse_rgba8[4 * i + 3] = 255u;
+                b.specular_rgba8[4 * i + 0] = 255u;
+                b.specular_rgba8[4 * i + 1] = 0u;
+                b.specular_rgba8[4 * i + 2] = 255u;
+                b.specular_rgba8[4 * i + 3] = 255u;
+                b.normals_rgba16f[4 * i + 0] = 0x0000u;
+                b.normals_rgba16f[4 * i + 1] = 0x0000u;
+                b.normals_rgba16f[4 * i + 2] = 0x3C00u;
+                b.normals_rgba16f[4 * i + 3] = 0x3800u;
+                b.depth_r32f[i] = Q20ToFloat(943718); // 0.90
+                b.mvec_rg16f[2 * i + 0] = h_pos16;
+                b.mvec_rg16f[2 * i + 1] = h_neg16;
+                b.hit_dist_r32f[i] = Q20ToFloat(524288);
+            }
+        }
+    }
 
     // Normalized per-frame UV velocities in Q20 (so physical motion scales cleanly with rw/rh):
     // Background pans slowly (+1.5 px/frame at 1280x720 -> du_bg_q20 = 1229, dv_bg_q20 = -728)
@@ -583,22 +676,56 @@ inline void PrepareFrame(
     const int64_t dv_bg_q20 = -728;
     const int64_t du_fg_q20 = -2662;
     const int64_t dv_fg_q20 = 1820;
+    // Independent transparency-layer UV velocity in v2_motion (-4.0 px/frame X, +0.75 px/frame Y at 1280x720)
+    const int64_t du_tl_q20 = -3277;
+    const int64_t dv_tl_q20 = 1092;
 
-    // Sphere center in normalized UV Q20 (wraps cleanly in [0.22, 0.78])
-    const int64_t t64 = static_cast<int64_t>(frame_idx);
-    const int64_t sph_cx_q20 = 655360ll + ((t64 * du_fg_q20) % 262144ll); // ~0.625 + motion
-    const int64_t sph_cy_q20 = 491520ll + ((t64 * dv_fg_q20) % 196608ll); // ~0.468 + motion
-    const int64_t prev_sph_cx_q20 = 655360ll + (((t64 > 0 ? t64 - 1 : 0) * du_fg_q20) % 262144ll);
-    const int64_t prev_sph_cy_q20 = 491520ll + (((t64 > 0 ? t64 - 1 : 0) * dv_fg_q20) % 196608ll);
+    // Sphere center in normalized UV Q20:
+    // In v2_motion, use smooth wrap-free motion across frames [-1..95] so frame 0 has identical velocity to frames 1..79.
+    const int64_t sph_cx_q20 = is_v2
+        ? (680000ll + ((t64 % 96ll) * du_fg_q20))
+        : (655360ll + ((t64 * du_fg_q20) % 262144ll));
+    const int64_t sph_cy_q20 = is_v2
+        ? (475136ll + ((t64 % 96ll) * dv_fg_q20))
+        : (491520ll + ((t64 * dv_fg_q20) % 196608ll));
+    const int64_t prev_sph_cx_q20 = is_v2
+        ? (sph_cx_q20 - du_fg_q20)
+        : (655360ll + (((t64 > 0 ? t64 - 1 : 0) * du_fg_q20) % 262144ll));
+    const int64_t prev_sph_cy_q20 = is_v2
+        ? (sph_cy_q20 - dv_fg_q20)
+        : (491520ll + (((t64 > 0 ? t64 - 1 : 0) * dv_fg_q20) % 196608ll));
     const int64_t sph_r_q20 = 229376ll; // radius = 0.21875 in vertical-normalized units
     const int64_t sph_r2_q40 = sph_r_q20 * sph_r_q20;
     const int64_t aspect_q20 = (static_cast<int64_t>(rw) << 20) / std::max(1u, rh);
 
-    // Pixel-space motion vectors (current -> previous = -velocity) in Q20:
-    const int32_t mv_bg_x_q20 = static_cast<int32_t>(-((du_bg_q20 * rw) >> 20));
-    const int32_t mv_bg_y_q20 = static_cast<int32_t>(-((dv_bg_q20 * rh) >> 20));
-    const int32_t mv_fg_x_q20 = static_cast<int32_t>(-(( (sph_cx_q20 - prev_sph_cx_q20) * rw) >> 20));
-    const int32_t mv_fg_y_q20 = static_cast<int32_t>(-(( (sph_cy_q20 - prev_sph_cy_q20) * rh) >> 20));
+    // Fix #1: du_bg_q20 * rw is ALREADY Q20 pixels (Q20 * int = Q20).
+    // v1 had an extra '>> 20' that shrunk S1/S2 MVs by 2^-20 (~1e-6 px); v2_motion preserves true pixel-scale Q20 MVs.
+    const int64_t mv_mul = is_v2 ? v2_mod.mv_tex_scale_num : 1ll;
+    const int64_t jit_dx_q20 = is_v2 ? (static_cast<int64_t>(v2_mod.mv_jitter_delta_sign) * static_cast<int64_t>(prev_jx_q20 - jx_q20)) : 0ll;
+    const int64_t jit_dy_q20 = is_v2 ? (static_cast<int64_t>(v2_mod.mv_jitter_delta_sign) * static_cast<int64_t>(prev_jy_q20 - jy_q20)) : 0ll;
+
+    const int32_t mv_bg_x_q20 = is_v2
+        ? static_cast<int32_t>((-(du_bg_q20 * static_cast<int64_t>(rw)) + jit_dx_q20) * mv_mul)
+        : static_cast<int32_t>(-((du_bg_q20 * rw) >> 20));
+    const int32_t mv_bg_y_q20 = is_v2
+        ? static_cast<int32_t>((-(dv_bg_q20 * static_cast<int64_t>(rh)) + jit_dy_q20) * mv_mul)
+        : static_cast<int32_t>(-((dv_bg_q20 * rh) >> 20));
+    const int32_t mv_fg_x_q20 = is_v2
+        ? static_cast<int32_t>((-((sph_cx_q20 - prev_sph_cx_q20) * static_cast<int64_t>(rw)) + jit_dx_q20) * mv_mul)
+        : static_cast<int32_t>(-(((sph_cx_q20 - prev_sph_cx_q20) * rw) >> 20));
+    const int32_t mv_fg_y_q20 = is_v2
+        ? static_cast<int32_t>((-((sph_cy_q20 - prev_sph_cy_q20) * static_cast<int64_t>(rh)) + jit_dy_q20) * mv_mul)
+        : static_cast<int32_t>(-(((sph_cy_q20 - prev_sph_cy_q20) * rh) >> 20));
+    const int32_t spec_sphere_mvx_q20 = is_v2
+        ? static_cast<int32_t>((((-((sph_cx_q20 - prev_sph_cx_q20) * static_cast<int64_t>(rw))) / 2ll) + jit_dx_q20) * mv_mul)
+        : (mv_fg_x_q20 / 2);
+    const int32_t spec_sphere_mvy_q20 = is_v2
+        ? static_cast<int32_t>((((-((sph_cy_q20 - prev_sph_cy_q20) * static_cast<int64_t>(rh))) / 2ll) + jit_dy_q20) * mv_mul)
+        : (mv_fg_y_q20 / 2);
+
+    const bool has_sss = (guide_mask & (kGuideSssAndCbt | kGuideSssOnly)) != 0u;
+    const bool has_cbt = (guide_mask & (kGuideSssAndCbt | kGuideCbtOnly)) != 0u;
+    const bool unpacked_rough = is_v2 && ((guide_mask & kGuideUnpackedRough) != 0u);
 
     for (uint32_t y = 0; y < rh; ++y)
     {
@@ -608,7 +735,7 @@ inline void PrepareFrame(
 
         for (uint32_t x = 0; x < rw; ++x)
         {
-            const size_t idx = size_t(y) * pitch_px + x;
+            const size_t idx = size_t(y + params.in_base_y) * pitch_px + (x + params.in_base_x);
             const int64_t ox_q20 = (static_cast<int64_t>(x) << 20) + (1ll << 19) - jx_q20;
             const int64_t uv_x_q20 = ox_q20 / std::max(1u, rw);
 
@@ -724,39 +851,90 @@ inline void PrepareFrame(
             b.normals_rgba16f[4 * idx + 0] = Q20ToHalfRNE(nx_q20);
             b.normals_rgba16f[4 * idx + 1] = Q20ToHalfRNE(ny_q20);
             b.normals_rgba16f[4 * idx + 2] = Q20ToHalfRNE(nz_q20);
-            b.normals_rgba16f[4 * idx + 3] = Q20ToHalfRNE(rough_q20);
+            b.normals_rgba16f[4 * idx + 3] = unpacked_rough ? 0x0000u : Q20ToHalfRNE(rough_q20);
+            if (unpacked_rough)
+                b.rough_r16f[idx] = Q20ToHalfRNE(rough_q20);
 
             b.depth_r32f[idx] = Q20ToFloat(depth_q20);
             b.mvec_rg16f[2 * idx + 0] = Q20ToHalfRNE(mvx_q20);
             b.mvec_rg16f[2 * idx + 1] = Q20ToHalfRNE(mvy_q20);
             b.hit_dist_r32f[idx] = Q20ToFloat(hit_q20);
 
-            if (guide_mask & kGuideSssAndCbt)
+            if (has_cbt)
             {
-                b.cbt_rgba16f[4 * idx + 0] = Q20ToHalfRNE(static_cast<int32_t>(rad_r_q20));
-                b.cbt_rgba16f[4 * idx + 1] = Q20ToHalfRNE(static_cast<int32_t>(rad_g_q20));
-                b.cbt_rgba16f[4 * idx + 2] = Q20ToHalfRNE(static_cast<int32_t>(rad_b_q20));
+                // Fix #4: In v1, cbt == color made (col - cbt) == 0 everywhere (leaving enc0_attr attr[30] = 0).
+                // In v2_motion, cbt represents pre-veil opaque radiance (5/8 of color above the floor) while color
+                // remains bit-identical to P00, cleanly isolating DLSSD.ColorBeforeTransparency sensitivity.
+                const bool veil_region = is_v2 && (uv_y_q20 < 680000ll);
+                const int32_t cbt_r = static_cast<int32_t>(veil_region ? ((rad_r_q20 * 5ll) >> 3) : rad_r_q20);
+                const int32_t cbt_g = static_cast<int32_t>(veil_region ? ((rad_g_q20 * 5ll) >> 3) : rad_g_q20);
+                const int32_t cbt_b = static_cast<int32_t>(veil_region ? ((rad_b_q20 * 5ll) >> 3) : rad_b_q20);
+                b.cbt_rgba16f[4 * idx + 0] = Q20ToHalfRNE(cbt_r);
+                b.cbt_rgba16f[4 * idx + 1] = Q20ToHalfRNE(cbt_g);
+                b.cbt_rgba16f[4 * idx + 2] = Q20ToHalfRNE(cbt_b);
                 b.cbt_rgba16f[4 * idx + 3] = 0x3C00u;
+            }
+            if (has_sss)
+            {
                 b.sss_r16f[idx] = Q20ToHalfRNE(hit_sphere ? 367002 : 0);
             }
 
             if (guide_mask & kGuideTranspLayer)
             {
                 const bool glass_band = (uv_x_q20 > 262144ll && uv_x_q20 < 458752ll && uv_y_q20 > 262144ll && uv_y_q20 < 786432ll);
-                const int32_t alpha_q20 = glass_band ? 262144 : 0; // 0.25 alpha glass panel
-                const int32_t tl_r = glass_band ? 65536 : 0;
-                const int32_t tl_g = glass_band ? 131072 : 0;
-                const int32_t tl_b = glass_band ? 196608 : 0;
-                b.transp_rgba16f[4 * idx + 0] = Q20ToHalfRNE(tl_r);
-                b.transp_rgba16f[4 * idx + 1] = Q20ToHalfRNE(tl_g);
-                b.transp_rgba16f[4 * idx + 2] = Q20ToHalfRNE(tl_b);
-                b.transp_rgba16f[4 * idx + 3] = Q20ToHalfRNE(alpha_q20);
+                if (!is_v2)
+                {
+                    const int32_t alpha_q20 = glass_band ? 262144 : 0; // 0.25 alpha glass panel
+                    const int32_t tl_r = glass_band ? 65536 : 0;
+                    const int32_t tl_g = glass_band ? 131072 : 0;
+                    const int32_t tl_b = glass_band ? 196608 : 0;
+                    b.transp_rgba16f[4 * idx + 0] = Q20ToHalfRNE(tl_r);
+                    b.transp_rgba16f[4 * idx + 1] = Q20ToHalfRNE(tl_g);
+                    b.transp_rgba16f[4 * idx + 2] = Q20ToHalfRNE(tl_b);
+                    b.transp_rgba16f[4 * idx + 3] = Q20ToHalfRNE(alpha_q20);
 
-                const uint16_t op_h = Q20ToHalfRNE(1048576 - alpha_q20);
-                b.transp_op_rgba16f[4 * idx + 0] = op_h;
-                b.transp_op_rgba16f[4 * idx + 1] = op_h;
-                b.transp_op_rgba16f[4 * idx + 2] = op_h;
-                b.transp_op_rgba16f[4 * idx + 3] = 0x3C00u;
+                    const uint16_t op_h = Q20ToHalfRNE(1048576 - alpha_q20);
+                    b.transp_op_rgba16f[4 * idx + 0] = op_h;
+                    b.transp_op_rgba16f[4 * idx + 1] = op_h;
+                    b.transp_op_rgba16f[4 * idx + 2] = op_h;
+                    b.transp_op_rgba16f[4 * idx + 3] = 0x3C00u;
+                }
+                else if (glass_band)
+                {
+                    // Fix #3: Spatially textured moving etched-glass ramp (period ~16 render px) + proper Opacity semantics.
+                    // Ensures 3x3 neighborhood [lo4, hi4] / [olo, ohi] is non-degenerate (lo4 < hi4) in downsample_tl,
+                    // so wrong MV (P02) vs exact tlmv (P03) produces distinct temporal accumulation.
+                    const int64_t gx_q20 = uv_x_q20 - t64 * du_tl_q20;
+                    const int64_t gy_q20 = uv_y_q20 - t64 * dv_tl_q20;
+                    const int64_t phase_mod = (((gx_q20 + (gy_q20 >> 1)) % 26214ll) + 26214ll) % 26214ll;
+                    const int64_t tri_q20 = (phase_mod < 13107ll ? phase_mod : (26214ll - phase_mod)) * 80ll; // [0, 1048560]
+
+                    const int32_t alpha_q20 = static_cast<int32_t>(131072ll + ((tri_q20 * 327680ll) >> 20)); // [0.125 .. 0.4375]
+                    const int32_t tl_r = static_cast<int32_t>(32768ll + ((tri_q20 * 262144ll) >> 20));
+                    const int32_t tl_g = static_cast<int32_t>(65536ll + (((1048576ll - tri_q20) * 196608ll) >> 20));
+                    const int32_t tl_b = static_cast<int32_t>(98304ll + ((tri_q20 * 327680ll) >> 20));
+                    b.transp_rgba16f[4 * idx + 0] = Q20ToHalfRNE(tl_r);
+                    b.transp_rgba16f[4 * idx + 1] = Q20ToHalfRNE(tl_g);
+                    b.transp_rgba16f[4 * idx + 2] = Q20ToHalfRNE(tl_b);
+                    b.transp_rgba16f[4 * idx + 3] = Q20ToHalfRNE(alpha_q20);
+
+                    // Per-channel colored opacity (0 = transparent pass-through outside glass; ~alpha inside glass)
+                    b.transp_op_rgba16f[4 * idx + 0] = Q20ToHalfRNE(static_cast<int32_t>((int64_t(alpha_q20) * 891289ll) >> 20));
+                    b.transp_op_rgba16f[4 * idx + 1] = Q20ToHalfRNE(alpha_q20);
+                    b.transp_op_rgba16f[4 * idx + 2] = Q20ToHalfRNE(static_cast<int32_t>((int64_t(alpha_q20) * 1153434ll) >> 20));
+                    b.transp_op_rgba16f[4 * idx + 3] = 0x3C00u;
+                }
+                else
+                {
+                    b.transp_rgba16f[4 * idx + 0] = 0x0000u;
+                    b.transp_rgba16f[4 * idx + 1] = 0x0000u;
+                    b.transp_rgba16f[4 * idx + 2] = 0x0000u;
+                    b.transp_rgba16f[4 * idx + 3] = 0x0000u;
+                    b.transp_op_rgba16f[4 * idx + 0] = 0x0000u;
+                    b.transp_op_rgba16f[4 * idx + 1] = 0x0000u;
+                    b.transp_op_rgba16f[4 * idx + 2] = 0x0000u;
+                    b.transp_op_rgba16f[4 * idx + 3] = 0x3C00u;
+                }
             }
 
             b.color_rgba16f[4 * idx + 0] = Q20ToHalfRNE(static_cast<int32_t>(rad_r_q20));
@@ -770,8 +948,8 @@ inline void PrepareFrame(
             if (guide_mask & kGuideSpecularMvec)
             {
                 // Reflected motion differs from surface motion on floor/sphere
-                b.spec_mvec_rg16f[2 * idx + 0] = Q20ToHalfRNE(hit_sphere ? (mv_fg_x_q20 / 2) : mv_fg_x_q20);
-                b.spec_mvec_rg16f[2 * idx + 1] = Q20ToHalfRNE(hit_sphere ? (mv_fg_y_q20 / 2) : mv_fg_y_q20);
+                b.spec_mvec_rg16f[2 * idx + 0] = Q20ToHalfRNE(hit_sphere ? spec_sphere_mvx_q20 : mv_fg_x_q20);
+                b.spec_mvec_rg16f[2 * idx + 1] = Q20ToHalfRNE(hit_sphere ? spec_sphere_mvy_q20 : mv_fg_y_q20);
             }
 
             if (guide_mask & kGuideResponsivity)
@@ -784,8 +962,12 @@ inline void PrepareFrame(
 
     if (guide_mask & kGuideTranspMvecs)
     {
-        const uint16_t tmv_x = Q20ToHalfRNE(static_cast<int32_t>(-((du_bg_q20 * out_w) >> 21)));
-        const uint16_t tmv_y = 0x0000u;
+        const uint16_t tmv_x = is_v2
+            ? Q20ToHalfRNE(static_cast<int32_t>(-(du_tl_q20 * static_cast<int64_t>(out_w)) * mv_mul))
+            : Q20ToHalfRNE(static_cast<int32_t>(-((du_bg_q20 * out_w) >> 21)));
+        const uint16_t tmv_y = is_v2
+            ? Q20ToHalfRNE(static_cast<int32_t>(-(dv_tl_q20 * static_cast<int64_t>(out_h)) * mv_mul))
+            : 0x0000u;
         const size_t n_out = size_t(out_w) * out_h;
         for (size_t i = 0; i < n_out; ++i)
         {
@@ -800,10 +982,14 @@ inline void PrepareFrame(
 inline std::string ComputeCanonicalFrameInputSha256(
     const FrameScalarParams& p,
     uint32_t guide_mask,
-    const CpuFrameBuffers& b)
+    const CpuFrameBuffers& b,
+    FixtureSuite suite = FixtureSuite::V1)
 {
+    const bool is_v2 = (suite == FixtureSuite::V2_Motion);
+    const char* fv = FixtureVersionForSuite(suite);
+
     Sha256 h;
-    h.Update(kFixtureVersion, std::strlen(kFixtureVersion) + 1);
+    h.Update(fv, std::strlen(fv) + 1);
     h.UpdateU32LE(p.frame_index);
     h.UpdateU32LE(p.rw);
     h.UpdateU32LE(p.rh);
@@ -814,6 +1000,12 @@ inline std::string ComputeCanonicalFrameInputSha256(
     h.UpdateU32LE(static_cast<uint32_t>(p.perf_quality));
     h.UpdateU32LE(static_cast<uint32_t>(p.create_flags));
     h.UpdateU32LE(guide_mask);
+    if (is_v2)
+    {
+        h.UpdateU32LE(p.in_base_x);
+        h.UpdateU32LE(p.in_base_y);
+        h.UpdateU32LE(p.roughness_mode);
+    }
     h.UpdateF32LE(p.jitter_x);
     h.UpdateF32LE(p.jitter_y);
     h.UpdateF32LE(p.mv_scale_x);
@@ -823,47 +1015,52 @@ inline std::string ComputeCanonicalFrameInputSha256(
     for (int i = 0; i < 16; ++i) h.UpdateF32LE(p.world_to_view[i]);
     for (int i = 0; i < 16; ++i) h.UpdateF32LE(p.view_to_clip[i]);
 
-    auto hashSubrect = [&](uint32_t slot_tag, const void* base, uint32_t pitch_elems, uint32_t w, uint32_t rows, uint32_t bpp) {
+    auto hashSubrect = [&](uint32_t slot_tag, const void* base, uint32_t pitch_elems, uint32_t bx, uint32_t by, uint32_t w, uint32_t rows, uint32_t bpp) {
         h.UpdateU32LE(slot_tag);
         h.UpdateU32LE(w);
         h.UpdateU32LE(rows);
         h.UpdateU32LE(bpp);
         const auto* bytes = static_cast<const uint8_t*>(base);
         const size_t src_row_bytes = size_t(pitch_elems) * bpp;
+        const size_t col_off_bytes = size_t(bx) * bpp;
         const size_t active_row_bytes = size_t(w) * bpp;
         for (uint32_t y = 0; y < rows; ++y)
-            h.Update(bytes + size_t(y) * src_row_bytes, active_row_bytes);
+            h.Update(bytes + size_t(by + y) * src_row_bytes + col_off_bytes, active_row_bytes);
     };
 
-    hashSubrect(1u, b.color_rgba16f.data(),   b.alloc_rw, p.rw, p.rh, 8u);
-    hashSubrect(2u, b.diffuse_rgba8.data(),   b.alloc_rw, p.rw, p.rh, 4u);
-    hashSubrect(3u, b.specular_rgba8.data(),  b.alloc_rw, p.rw, p.rh, 4u);
-    hashSubrect(4u, b.normals_rgba16f.data(), b.alloc_rw, p.rw, p.rh, 8u);
-    hashSubrect(5u, b.depth_r32f.data(),      b.alloc_rw, p.rw, p.rh, 4u);
-    hashSubrect(6u, b.mvec_rg16f.data(),      b.alloc_rw, p.rw, p.rh, 4u);
+    const uint32_t bx = is_v2 ? p.in_base_x : 0u;
+    const uint32_t by = is_v2 ? p.in_base_y : 0u;
+
+    hashSubrect(1u, b.color_rgba16f.data(),   b.alloc_rw, bx, by, p.rw, p.rh, 8u);
+    hashSubrect(2u, b.diffuse_rgba8.data(),   b.alloc_rw, bx, by, p.rw, p.rh, 4u);
+    hashSubrect(3u, b.specular_rgba8.data(),  b.alloc_rw, bx, by, p.rw, p.rh, 4u);
+    hashSubrect(4u, b.normals_rgba16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 8u);
+    hashSubrect(5u, b.depth_r32f.data(),      b.alloc_rw, bx, by, p.rw, p.rh, 4u);
+    hashSubrect(6u, b.mvec_rg16f.data(),      b.alloc_rw, bx, by, p.rw, p.rh, 4u);
     if ((guide_mask & kGuideOmitHitDist) == 0u)
-        hashSubrect(7u, b.hit_dist_r32f.data(), b.alloc_rw, p.rw, p.rh, 4u);
+        hashSubrect(7u, b.hit_dist_r32f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 4u);
 
     if (guide_mask & kGuideDisocclusion)
-        hashSubrect(10u, b.disocc_r16f.data(), b.alloc_rw, p.rw, p.rh, 2u);
+        hashSubrect(10u, b.disocc_r16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 2u);
     if (guide_mask & kGuideTranspLayer)
     {
-        hashSubrect(11u, b.transp_rgba16f.data(),    b.alloc_rw, p.rw, p.rh, 8u);
-        hashSubrect(12u, b.transp_op_rgba16f.data(), b.alloc_rw, p.rw, p.rh, 8u);
+        hashSubrect(11u, b.transp_rgba16f.data(),    b.alloc_rw, bx, by, p.rw, p.rh, 8u);
+        hashSubrect(12u, b.transp_op_rgba16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 8u);
     }
     if (guide_mask & kGuideTranspMvecs)
-        hashSubrect(13u, b.transp_mvec_rg16f.data(), b.out_w, p.out_w, p.out_h, 4u);
-    if (guide_mask & kGuideSssAndCbt)
-    {
-        hashSubrect(14u, b.sss_r16f.data(),     b.alloc_rw, p.rw, p.rh, 2u);
-        hashSubrect(15u, b.cbt_rgba16f.data(),  b.alloc_rw, p.rw, p.rh, 8u);
-    }
+        hashSubrect(13u, b.transp_mvec_rg16f.data(), b.out_w, 0u, 0u, p.out_w, p.out_h, 4u);
+    if (guide_mask & (kGuideSssAndCbt | kGuideSssOnly))
+        hashSubrect(14u, b.sss_r16f.data(),     b.alloc_rw, bx, by, p.rw, p.rh, 2u);
+    if (guide_mask & (kGuideSssAndCbt | kGuideCbtOnly))
+        hashSubrect(15u, b.cbt_rgba16f.data(),  b.alloc_rw, bx, by, p.rw, p.rh, 8u);
     if (guide_mask & kGuideSpecularMvec)
-        hashSubrect(16u, b.spec_mvec_rg16f.data(), b.alloc_rw, p.rw, p.rh, 4u);
+        hashSubrect(16u, b.spec_mvec_rg16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 4u);
     if (guide_mask & kGuideResponsivity)
-        hashSubrect(17u, b.resp_r16f.data(), b.alloc_rw, p.rw, p.rh, 2u);
+        hashSubrect(17u, b.resp_r16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 2u);
     if (guide_mask & kGuideDepthOfField)
-        hashSubrect(18u, b.dof_r16f.data(), b.alloc_rw, p.rw, p.rh, 2u);
+        hashSubrect(18u, b.dof_r16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 2u);
+    if (is_v2 && (guide_mask & kGuideUnpackedRough))
+        hashSubrect(19u, b.rough_r16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 2u);
 
     return h.FinalHex();
 }
@@ -894,6 +1091,23 @@ inline void RunSelfTests()
     // 3. FIPS 180-4 SHA-256 test vector ("abc")
     check(Sha256BytesHex("abc", 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
           "SHA-256('abc') vector mismatch");
+
+    // 4. v2_motion regression checks (pixel-scale MV, moving camera, non-flat transparency, cbt != color)
+    {
+        CpuFrameBuffers b;
+        b.Allocate(64, 36, 96, 54, kGuideTranspLayer | kGuideTranspMvecs | kGuideCbtOnly | kGuideSpecularMvec);
+        FrameScalarParams p0 {}, p1 {};
+        PrepareFrame(SceneId::S1_TemporalHalton, kGuideTranspLayer | kGuideTranspMvecs | kGuideCbtOnly | kGuideSpecularMvec,
+                     0u, 64, 36, 96, 54, 1, 6u, 2, p0, b, FixtureSuite::V2_Motion);
+        PrepareFrame(SceneId::S1_TemporalHalton, kGuideTranspLayer | kGuideTranspMvecs | kGuideCbtOnly | kGuideSpecularMvec,
+                     1u, 64, 36, 96, 54, 0, 6u, 2, p1, b, FixtureSuite::V2_Motion);
+        // Background MV at 64px width: -1229 * 64 / 2^20 = -0.075 px (far above 2^-20!), and at 1280px = -1.50 px
+        check(std::abs(HalfToDouble(b.mvec_rg16f[0])) > 0.05, "v2_motion mvec_rg16f must be pixel-scale (not >>20)");
+        check(p1.world_to_view[12] != p0.world_to_view[12], "v2_motion world_to_view[12] must move per frame");
+        check(HalfToDouble(b.transp_mvec_rg16f[0]) > 0.25, "v2_motion transp_mvec must be pixel-scale");
+        check(b.transp_op_rgba16f[0] == 0x0000u, "v2_motion transp_op outside glass must be 0.0 opacity (not 1.0 transmittance)");
+        check(b.cbt_rgba16f[0] != b.color_rgba16f[0], "v2_motion cbt_rgba16f must differ from color_rgba16f in veil region");
+    }
 }
 
 } // namespace rr_ref

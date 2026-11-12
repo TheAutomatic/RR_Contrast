@@ -2,10 +2,10 @@
 // Standalone D3D12 + Official NGX DLSS-RR (nvngx_dlssd.dll v310.9.1.0) Reference Runner.
 // Supports:
 //   --self-test
-//   --dump-fixture-hashes <cases.json>
-//   --verify-fixtures <cases.json>
-//   --smoke --dlssd <nvngx_dlssd.dll> --out <dir>
-//   --pass <quality-core|timing-core|quality-ext|probes> --dlssd <nvngx_dlssd.dll> --out <dir> [--case <id>]
+//   [--suite <v1|v2_motion>] --dump-fixture-hashes <cases.json>
+//   [--suite <v1|v2_motion>] --verify-fixtures <cases.json>
+//   [--suite <v1|v2_motion>] --smoke --dlssd <nvngx_dlssd.dll> --out <dir>
+//   [--suite <v1|v2_motion>] --pass <quality-core|timing-core|quality-ext|probes> --dlssd <nvngx_dlssd.dll> --out <dir> [--case <id>]
 //   --profile-target <1080p_qual|4k_qual|4k_perf> --dlssd <nvngx_dlssd.dll> --out <dir> [--profile-frame 32]
 
 #ifndef NOMINMAX
@@ -353,7 +353,19 @@ struct SuiteCase
     uint32_t drs_frames = 0;      // Quality: 16 frames (64..71 Reset=0, 72..79 Reset=1); Timing: 64 frames
     uint32_t rounds = 1;          // Timing rounds
     std::vector<uint32_t> save_frames;
+    rr_ref::V2FrameModifiers v2_mod {};
+    std::string pair_ref_id;
+    bool expect_equiv_p00 = false;
 };
+
+rr_ref::FixtureSuite ParseFixtureSuite(const std::string& s)
+{
+    if (s == "v1" || s == rr_ref::kFixtureVersion)
+        return rr_ref::FixtureSuite::V1;
+    if (s == "v2_motion" || s == "v2-motion" || s == rr_ref::kFixtureVersionV2Motion)
+        return rr_ref::FixtureSuite::V2_Motion;
+    throw std::runtime_error("Unknown --suite value: " + s + " (expected v1 or v2_motion)");
+}
 
 std::vector<SuiteCase> BuildCanonicalSuite()
 {
@@ -437,6 +449,116 @@ std::vector<SuiteCase> BuildCanonicalSuite()
     return c;
 }
 
+// Focused Round-2 motion & capability supplement (rr_contrast_v2_motion):
+// Skips all static S0 cases, timing-core, and Nsight; runs ONLY fixed true-motion QualityExt (4 cases)
+// plus single-variable 16-frame capability/guide probes (<15s total on RTX 5090).
+std::vector<SuiteCase> BuildV2MotionSuite()
+{
+    using rr_ref::SceneId;
+    const std::vector<uint32_t> k10 = {0, 1, 2, 4, 8, 15, 31, 63, 67, 75};
+    const std::vector<uint32_t> k8  = {0, 1, 2, 4, 8, 15, 31, 63};
+    const std::vector<uint32_t> k6  = {0, 1, 4, 15, 31, 63};
+    const std::vector<uint32_t> k4  = {0, 4, 15, 63};
+    const std::vector<uint32_t> kp  = {15};
+
+    std::vector<SuiteCase> c;
+
+    // 1. Quality Extended under true pixel-scale motion + moving camera (S1 temporal Halton + S2 HDR ~16.0 stress)
+    c.push_back({"Q_S1_1080p_qual", PassGroup::QualityExt, SceneId::S1_TemporalHalton, 0u,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, true, 0, 64, 16, 1, k10});
+    c.push_back({"Q_S1_4k_qual", PassGroup::QualityExt, SceneId::S1_TemporalHalton, 0u,
+                 2560, 1440, 2560, 1440, 3840, 2160, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 64, 0, 1, k6});
+    c.push_back({"Q_S2_1080p_qual", PassGroup::QualityExt, SceneId::S2_HdrStress, 0u,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 64, 0, 1, k8});
+    c.push_back({"Q_S2_4k_perf", PassGroup::QualityExt, SceneId::S2_HdrStress, 0u,
+                 1920, 1080, 1920, 1080, 3840, 2160, NVSDK_NGX_PerfQuality_Value_MaxPerf, 6u, false, 0, 64, 0, 1, k4});
+
+    // 2. Single-variable Motion, Guide & ABI Equivalence Probes (16 frames 0..15, save f015)
+    c.push_back({"P00_baseline_s1_g0", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
+    c.push_back({"P01_guide_disocc", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideDisocclusion,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
+    c.push_back({"P02_guide_transp_rgba", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideTranspLayer,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
+    c.push_back({"P03_guide_transp_tlmv", PassGroup::Probes, SceneId::S1_TemporalHalton,
+                 rr_ref::kGuideTranspLayer | rr_ref::kGuideTranspMvecs,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                 {}, "P02_guide_transp_rgba", false});
+    c.push_back({"P04a_guide_sss_only", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideSssOnly,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
+    c.push_back({"P04b_guide_cbt_only", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideCbtOnly,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
+    c.push_back({"P05_guide_spec_mvec", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideSpecularMvec,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
+    c.push_back({"P09_no_hit_with_spec_mv", PassGroup::Probes, SceneId::S1_TemporalHalton,
+                 rr_ref::kGuideOmitHitDist | rr_ref::kGuideSpecularMvec,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                 {}, "P05_guide_spec_mvec", false});
+    c.push_back({"P10_no_hit_plain", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideOmitHitDist,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
+
+    // P13: Manual Pre.Exposure / Exposure.Scale step (AutoExposure flag cleared: 0x0B)
+    {
+        rr_ref::V2FrameModifiers m {};
+        m.create_flags = 0x0B; // IsHDR(1) | MVLowRes(2) | DepthInverted(8), AutoExposure=0
+        m.manual_exposure_step = true;
+        c.push_back({"P13_exposure_no_auto", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+                     1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                     m, {}, false});
+    }
+    // P14: Non-zero input Subrect.Base = (32, 24) inside 1344x768 D3D12 textures with magenta sentinel border (should match P00)
+    {
+        rr_ref::V2FrameModifiers m {};
+        m.in_base_x = 32u;
+        m.in_base_y = 24u;
+        c.push_back({"P14_input_subrect_base_32_24", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+                     1344, 768, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                     m, {}, true});
+    }
+    // P15: MV.Scale = (-0.5, -0.5) with -2x pre-scaled MV texture (exact IEEE-754 power-of-2 inverse -> should match P00)
+    {
+        rr_ref::V2FrameModifiers m {};
+        m.mv_scale_x = -0.5f;
+        m.mv_scale_y = -0.5f;
+        m.mv_tex_scale_num = -2ll;
+        c.push_back({"P15_mv_scale_neg0p5", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+                     1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                     m, {}, true});
+    }
+    // P16a/b/c: MVJittered flag (0x4F) raw vs +(prev_j - curr_j) vs +(curr_j - prev_j) to lock exact C(0x328)/C(0x32c) sign
+    {
+        rr_ref::V2FrameModifiers ma {};
+        ma.create_flags = 0x4F; // 0x4B | NVSDK_NGX_DLSS_Feature_Flags_MVJittered(4)
+        ma.mv_jitter_delta_sign = 0;
+        c.push_back({"P16a_mv_jittered_raw", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+                     1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                     ma, {}, false});
+
+        rr_ref::V2FrameModifiers mb = ma;
+        mb.mv_jitter_delta_sign = +1;
+        c.push_back({"P16b_mv_jittered_prev_minus_curr", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+                     1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                     mb, "P16a_mv_jittered_raw", true});
+
+        rr_ref::V2FrameModifiers mc = ma;
+        mc.mv_jitter_delta_sign = -1;
+        c.push_back({"P16c_mv_jittered_curr_minus_prev", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+                     1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                     mc, "P16a_mv_jittered_raw", true});
+    }
+    // P17: Unpacked Roughness (Roughness.Mode = 0, GBuffer.Roughness R16F bound, Normals.w = 0 -> should match P00)
+    c.push_back({"P17_roughness_unpacked_r16f", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideUnpackedRough,
+                 1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                 {}, {}, true});
+
+    return c;
+}
+
+std::vector<SuiteCase> BuildSuite(rr_ref::FixtureSuite suite)
+{
+    return (suite == rr_ref::FixtureSuite::V2_Motion) ? BuildV2MotionSuite() : BuildCanonicalSuite();
+}
+
 struct CaseFixtureHashes
 {
     std::string f000_sha256;
@@ -445,7 +567,7 @@ struct CaseFixtureHashes
     std::string drs_f072_reset1_sha256;
 };
 
-CaseFixtureHashes ComputeCaseFixtureHashes(const SuiteCase& sc)
+CaseFixtureHashes ComputeCaseFixtureHashes(const SuiteCase& sc, rr_ref::FixtureSuite suite = rr_ref::FixtureSuite::V1)
 {
     rr_ref::CpuFrameBuffers bufs;
     bufs.Allocate(sc.alloc_rw, sc.alloc_rh, sc.out_w, sc.out_h, sc.guide_mask);
@@ -456,49 +578,50 @@ CaseFixtureHashes ComputeCaseFixtureHashes(const SuiteCase& sc)
     CaseFixtureHashes out {};
 
     rr_ref::PrepareFrame(sc.scene, sc.guide_mask, 0u, sc.steady_rw, sc.steady_rh, sc.out_w, sc.out_h,
-                         1, sc.preset_hint, sc.perf_quality, p, bufs);
-    out.f000_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs);
+                         1, sc.preset_hint, sc.perf_quality, p, bufs, suite, sc.v2_mod);
+    out.f000_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs, suite);
 
     rr_ref::PrepareFrame(sc.scene, sc.guide_mask, 15u, sc.steady_rw, sc.steady_rh, sc.out_w, sc.out_h,
-                         0, sc.preset_hint, sc.perf_quality, p, bufs);
-    out.f015_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs);
+                         0, sc.preset_hint, sc.perf_quality, p, bufs, suite, sc.v2_mod);
+    out.f015_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs, suite);
 
     if (sc.has_drs)
     {
         const uint32_t drs_w = (sc.steady_rw * 85u / 100u) & ~1u;
         const uint32_t drs_h = (sc.steady_rh * 85u / 100u) & ~1u;
         rr_ref::PrepareFrame(sc.scene, sc.guide_mask, 64u, drs_w, drs_h, sc.out_w, sc.out_h,
-                             0, sc.preset_hint, sc.perf_quality, p, bufs);
-        out.drs_f064_reset0_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs);
+                             0, sc.preset_hint, sc.perf_quality, p, bufs, suite, sc.v2_mod);
+        out.drs_f064_reset0_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs, suite);
 
         rr_ref::PrepareFrame(sc.scene, sc.guide_mask, 72u, drs_w, drs_h, sc.out_w, sc.out_h,
-                             1, sc.preset_hint, sc.perf_quality, p, bufs);
-        out.drs_f072_reset1_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs);
+                             1, sc.preset_hint, sc.perf_quality, p, bufs, suite, sc.v2_mod);
+        out.drs_f072_reset1_sha256 = rr_ref::ComputeCanonicalFrameInputSha256(p, sc.guide_mask, bufs, suite);
     }
     return out;
 }
 
-void DumpFixtureHashesJson(const fs::path& json_path)
+void DumpFixtureHashesJson(const fs::path& json_path, rr_ref::FixtureSuite suite)
 {
     if (json_path.has_parent_path())
         fs::create_directories(json_path.parent_path());
 
-    const auto suite = BuildCanonicalSuite();
+    const auto cases = BuildSuite(suite);
+    const char* fv = rr_ref::FixtureVersionForSuite(suite);
     std::ofstream out(json_path, std::ios::binary);
     Require(static_cast<bool>(out), "Failed to open output JSON: " + WideToUtf8(json_path.wstring()));
 
     out << "{\n"
-        << "  \"fixture_version\": \"" << rr_ref::kFixtureVersion << "\",\n"
+        << "  \"fixture_version\": \"" << fv << "\",\n"
         << "  \"expected_dlssd_version\": \"" << kExpectedDlssdVersion << "\",\n"
         << "  \"expected_dlssd_bytes\": " << kExpectedDlssdBytes << ",\n"
         << "  \"expected_dlssd_sha256\": \"" << kExpectedDlssdSha256 << "\",\n"
         << "  \"openrr_weight_slice_note\": \"" << kOpenRrWeightSliceNote << "\",\n"
         << "  \"cases\": [\n";
 
-    for (size_t i = 0; i < suite.size(); ++i)
+    for (size_t i = 0; i < cases.size(); ++i)
     {
-        const auto& sc = suite[i];
-        const auto fh = ComputeCaseFixtureHashes(sc);
+        const auto& sc = cases[i];
+        const auto fh = ComputeCaseFixtureHashes(sc, suite);
         const uint32_t drs_w = sc.has_drs ? ((sc.steady_rw * 85u / 100u) & ~1u) : 0u;
         const uint32_t drs_h = sc.has_drs ? ((sc.steady_rh * 85u / 100u) & ~1u) : 0u;
 
@@ -512,8 +635,17 @@ void DumpFixtureHashesJson(const fs::path& json_path)
             << "      \"drs_render\": [" << drs_w << ", " << drs_h << "],\n"
             << "      \"output\": [" << sc.out_w << ", " << sc.out_h << "],\n"
             << "      \"perf_quality\": " << sc.perf_quality << ",\n"
-            << "      \"preset_hint\": " << sc.preset_hint << ",\n"
-            << "      \"warmup_frames\": " << sc.warmup_frames << ",\n"
+            << "      \"preset_hint\": " << sc.preset_hint << ",\n";
+        if (suite == rr_ref::FixtureSuite::V2_Motion)
+        {
+            out << "      \"create_flags\": " << sc.v2_mod.create_flags << ",\n"
+                << "      \"in_subrect_base\": [" << sc.v2_mod.in_base_x << ", " << sc.v2_mod.in_base_y << "],\n"
+                << "      \"mv_scale\": [" << sc.v2_mod.mv_scale_x << ", " << sc.v2_mod.mv_scale_y << "],\n"
+                << "      \"mv_tex_scale_num\": " << sc.v2_mod.mv_tex_scale_num << ",\n"
+                << "      \"mv_jitter_delta_sign\": " << sc.v2_mod.mv_jitter_delta_sign << ",\n"
+                << "      \"manual_exposure_step\": " << (sc.v2_mod.manual_exposure_step ? "true" : "false") << ",\n";
+        }
+        out << "      \"warmup_frames\": " << sc.warmup_frames << ",\n"
             << "      \"steady_frames\": " << sc.steady_frames << ",\n"
             << "      \"drs_frames\": " << sc.drs_frames << ",\n"
             << "      \"rounds\": " << sc.rounds << ",\n"
@@ -533,13 +665,13 @@ void DumpFixtureHashesJson(const fs::path& json_path)
         {
             out << "\n";
         }
-        out << "    }" << (i + 1 < suite.size() ? "," : "") << "\n";
+        out << "    }" << (i + 1 < cases.size() ? "," : "") << "\n";
     }
     out << "  ]\n}\n";
 }
 
-// Lightweight line-oriented verifier for cases/cases.json (no external JSON library required).
-void VerifyFixturesAgainstJson(const fs::path& json_path)
+// Lightweight line-oriented verifier for cases/cases.json or cases/cases_v2_motion.json (no external JSON library required).
+void VerifyFixturesAgainstJson(const fs::path& json_path, rr_ref::FixtureSuite cli_suite, bool suite_explicit)
 {
     std::ifstream in(json_path);
     Require(static_cast<bool>(in), "Cannot open cases JSON: " + WideToUtf8(json_path.wstring()));
@@ -556,20 +688,29 @@ void VerifyFixturesAgainstJson(const fs::path& json_path)
     };
 
     const std::string fv = extractStringField(0, content.size(), "fixture_version");
-    Require(fv == rr_ref::kFixtureVersion,
-            "fixture_version mismatch in cases.json: expected " + std::string(rr_ref::kFixtureVersion) + ", got " + fv);
+    rr_ref::FixtureSuite suite = cli_suite;
+    if (!suite_explicit)
+    {
+        if (fv == rr_ref::kFixtureVersionV2Motion)
+            suite = rr_ref::FixtureSuite::V2_Motion;
+        else
+            suite = rr_ref::FixtureSuite::V1;
+    }
+    const char* expected_fv = rr_ref::FixtureVersionForSuite(suite);
+    Require(fv == expected_fv,
+            "fixture_version mismatch in JSON: expected " + std::string(expected_fv) + ", got " + fv);
 
-    const auto suite = BuildCanonicalSuite();
+    const auto cases = BuildSuite(suite);
     size_t verified_hashes = 0;
-    for (const auto& sc : suite)
+    for (const auto& sc : cases)
     {
         const std::string id_needle = "\"id\": \"" + sc.id + "\"";
         const size_t block_start = content.find(id_needle);
-        Require(block_start != std::string::npos, "Missing case in cases.json: " + sc.id);
+        Require(block_start != std::string::npos, "Missing case in cases JSON: " + sc.id);
         const size_t block_end = content.find("}", block_start);
-        Require(block_end != std::string::npos, "Malformed case block in cases.json: " + sc.id);
+        Require(block_end != std::string::npos, "Malformed case block in cases JSON: " + sc.id);
 
-        const auto actual = ComputeCaseFixtureHashes(sc);
+        const auto actual = ComputeCaseFixtureHashes(sc, suite);
         const std::string exp_f000 = extractStringField(block_start, block_end, "f000_input_sha256");
         const std::string exp_f015 = extractStringField(block_start, block_end, "f015_input_sha256");
         Require(actual.f000_sha256 == exp_f000,
@@ -590,7 +731,7 @@ void VerifyFixturesAgainstJson(const fs::path& json_path)
         }
     }
     std::printf("[PASS] Verified %zu canonical input SHA-256 hashes across %zu suite cases (fixture_version=%s)\n",
-                verified_hashes, suite.size(), rr_ref::kFixtureVersion);
+                verified_hashes, cases.size(), expected_fv);
 }
 
 // =====================================================================================================================
@@ -657,17 +798,29 @@ struct NgxApi
         evaluate_feature = reinterpret_cast<PFN_EvaluateFeature>(proc("NVSDK_NGX_D3D12_EvaluateFeature"));
         release_feature = reinterpret_cast<PFN_ReleaseFeature>(proc("NVSDK_NGX_D3D12_ReleaseFeature"));
 
-        Require(init_project_id && shutdown1 && (get_cap_params || alloc_params) && destroy_params &&
+        Require((init_project_id || init_ext || init_pub) && (shutdown1 || shutdown0) &&
+                (get_cap_params || alloc_params) && destroy_params &&
                 create_feature && evaluate_feature && release_feature,
                 "NGX loader missing required D3D12 exports: " + WideToUtf8(loader_path.wstring()));
     }
 
     NVSDK_NGX_Result Init(unsigned long long app_id, const wchar_t* app_data, ID3D12Device* dev, const NVSDK_NGX_FeatureCommonInfo* info)
     {
-        (void)app_id;
-        // Driver-core ProjectID ABI: version precedes FeatureCommonInfo.
-        const auto r = init_project_id("46fc1417-66bd-5517-943a-d1993498b797", NVSDK_NGX_ENGINE_TYPE_CUSTOM,
-            "RR_Contrast_reference_v1", app_data, dev, NVSDK_NGX_Version_API, info);
+        NVSDK_NGX_Result r = NVSDK_NGX_Result_Fail;
+        if (init_project_id)
+        {
+            // Driver-core ProjectID ABI: version precedes FeatureCommonInfo (proven on RTX 5090 _nvngx.dll).
+            r = init_project_id("46fc1417-66bd-5517-943a-d1993498b797", NVSDK_NGX_ENGINE_TYPE_CUSTOM,
+                                "RR_Contrast_reference_v1", app_data, dev, NVSDK_NGX_Version_API, info);
+        }
+        else if (init_ext)
+        {
+            r = init_ext(app_id, app_data, dev, NVSDK_NGX_Version_API, info);
+        }
+        else if (init_pub)
+        {
+            r = init_pub(app_id, app_data, dev, info, NVSDK_NGX_Version_API);
+        }
         initialized = NVSDK_NGX_SUCCEED(r);
         return r;
     }
@@ -687,11 +840,19 @@ struct NgxApi
 
     void Shutdown(ID3D12Device* dev)
     {
-        if (initialized && shutdown1) {
-            unsigned int remaining_instances = 0;
-            RuntimeTrace("[CLEANUP] Shutdown1 driver call begin");
-            shutdown1(dev, &remaining_instances);
-            RuntimeTrace("[CLEANUP] Shutdown1 driver call returned");
+        if (initialized)
+        {
+            if (shutdown1)
+            {
+                unsigned int remaining_instances = 0;
+                RuntimeTrace("[CLEANUP] Shutdown1 driver call begin");
+                shutdown1(dev, &remaining_instances);
+                RuntimeTrace("[CLEANUP] Shutdown1 driver call returned");
+            }
+            else if (shutdown0)
+            {
+                shutdown0();
+            }
             initialized = false;
         }
     }
@@ -915,7 +1076,7 @@ struct GpuTex2D
 
 struct GpuSceneResources
 {
-    GpuTex2D color, diffuse, specular, normals, depth, mvec, hit_dist;
+    GpuTex2D color, diffuse, specular, normals, rough, depth, mvec, hit_dist;
     GpuTex2D disocc, transp, transp_op, transp_mvec, sss, cbt, spec_mvec, resp, dof;
     GpuTex2D output;
     ComPtr<ID3D12Resource> output_readback;
@@ -927,6 +1088,8 @@ struct GpuSceneResources
         diffuse.Create(dev, max_rw, max_rh, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, D3D12_RESOURCE_STATE_COPY_DEST);
         specular.Create(dev, max_rw, max_rh, DXGI_FORMAT_R8G8B8A8_UNORM, 4, false, D3D12_RESOURCE_STATE_COPY_DEST);
         normals.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, false, D3D12_RESOURCE_STATE_COPY_DEST);
+        if (guide_mask & rr_ref::kGuideUnpackedRough)
+            rough.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16_FLOAT, 2, false, D3D12_RESOURCE_STATE_COPY_DEST);
         depth.Create(dev, max_rw, max_rh, DXGI_FORMAT_R32_FLOAT, 4, false, D3D12_RESOURCE_STATE_COPY_DEST);
         mvec.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16G16_FLOAT, 4, false, D3D12_RESOURCE_STATE_COPY_DEST);
         if ((guide_mask & rr_ref::kGuideOmitHitDist) == 0u)
@@ -941,11 +1104,10 @@ struct GpuSceneResources
         }
         if (guide_mask & rr_ref::kGuideTranspMvecs)
             transp_mvec.Create(dev, out_w, out_h, DXGI_FORMAT_R16G16_FLOAT, 4, false, D3D12_RESOURCE_STATE_COPY_DEST);
-        if (guide_mask & rr_ref::kGuideSssAndCbt)
-        {
+        if (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideSssOnly))
             sss.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16_FLOAT, 2, false, D3D12_RESOURCE_STATE_COPY_DEST);
+        if (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideCbtOnly))
             cbt.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, false, D3D12_RESOURCE_STATE_COPY_DEST);
-        }
         if (guide_mask & rr_ref::kGuideSpecularMvec)
             spec_mvec.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16G16_FLOAT, 4, false, D3D12_RESOURCE_STATE_COPY_DEST);
         if (guide_mask & rr_ref::kGuideResponsivity)
@@ -975,40 +1137,45 @@ struct GpuSceneResources
         }
     }
 
-    void UploadFrame(D3dContext& dx, const rr_ref::CpuFrameBuffers& b, uint32_t active_rw, uint32_t active_rh, uint32_t guide_mask)
+    void UploadFrame(D3dContext& dx, const rr_ref::CpuFrameBuffers& b, uint32_t active_rw, uint32_t active_rh, uint32_t guide_mask,
+                     uint32_t in_base_x = 0u, uint32_t in_base_y = 0u)
     {
         CheckHr(dx.ca->Reset(), "UploadFrame ca->Reset");
         CheckHr(dx.cl->Reset(dx.ca.Get(), nullptr), "UploadFrame cl->Reset");
 
-        color.StageAndRecordUpload(dx.cl.Get(), b.color_rgba16f.data(), b.alloc_rw, active_rw, active_rh);
-        diffuse.StageAndRecordUpload(dx.cl.Get(), b.diffuse_rgba8.data(), b.alloc_rw, active_rw, active_rh);
-        specular.StageAndRecordUpload(dx.cl.Get(), b.specular_rgba8.data(), b.alloc_rw, active_rw, active_rh);
-        normals.StageAndRecordUpload(dx.cl.Get(), b.normals_rgba16f.data(), b.alloc_rw, active_rw, active_rh);
-        depth.StageAndRecordUpload(dx.cl.Get(), b.depth_r32f.data(), b.alloc_rw, active_rw, active_rh);
-        mvec.StageAndRecordUpload(dx.cl.Get(), b.mvec_rg16f.data(), b.alloc_rw, active_rw, active_rh);
+        const uint32_t up_w = (in_base_x != 0u || in_base_y != 0u) ? b.alloc_rw : active_rw;
+        const uint32_t up_h = (in_base_x != 0u || in_base_y != 0u) ? b.alloc_rh : active_rh;
+
+        color.StageAndRecordUpload(dx.cl.Get(), b.color_rgba16f.data(), b.alloc_rw, up_w, up_h);
+        diffuse.StageAndRecordUpload(dx.cl.Get(), b.diffuse_rgba8.data(), b.alloc_rw, up_w, up_h);
+        specular.StageAndRecordUpload(dx.cl.Get(), b.specular_rgba8.data(), b.alloc_rw, up_w, up_h);
+        normals.StageAndRecordUpload(dx.cl.Get(), b.normals_rgba16f.data(), b.alloc_rw, up_w, up_h);
+        if (guide_mask & rr_ref::kGuideUnpackedRough)
+            rough.StageAndRecordUpload(dx.cl.Get(), b.rough_r16f.data(), b.alloc_rw, up_w, up_h);
+        depth.StageAndRecordUpload(dx.cl.Get(), b.depth_r32f.data(), b.alloc_rw, up_w, up_h);
+        mvec.StageAndRecordUpload(dx.cl.Get(), b.mvec_rg16f.data(), b.alloc_rw, up_w, up_h);
         if ((guide_mask & rr_ref::kGuideOmitHitDist) == 0u)
-            hit_dist.StageAndRecordUpload(dx.cl.Get(), b.hit_dist_r32f.data(), b.alloc_rw, active_rw, active_rh);
+            hit_dist.StageAndRecordUpload(dx.cl.Get(), b.hit_dist_r32f.data(), b.alloc_rw, up_w, up_h);
 
         if (guide_mask & rr_ref::kGuideDisocclusion)
-            disocc.StageAndRecordUpload(dx.cl.Get(), b.disocc_r16f.data(), b.alloc_rw, active_rw, active_rh);
+            disocc.StageAndRecordUpload(dx.cl.Get(), b.disocc_r16f.data(), b.alloc_rw, up_w, up_h);
         if (guide_mask & rr_ref::kGuideTranspLayer)
         {
-            transp.StageAndRecordUpload(dx.cl.Get(), b.transp_rgba16f.data(), b.alloc_rw, active_rw, active_rh);
-            transp_op.StageAndRecordUpload(dx.cl.Get(), b.transp_op_rgba16f.data(), b.alloc_rw, active_rw, active_rh);
+            transp.StageAndRecordUpload(dx.cl.Get(), b.transp_rgba16f.data(), b.alloc_rw, up_w, up_h);
+            transp_op.StageAndRecordUpload(dx.cl.Get(), b.transp_op_rgba16f.data(), b.alloc_rw, up_w, up_h);
         }
         if (guide_mask & rr_ref::kGuideTranspMvecs)
             transp_mvec.StageAndRecordUpload(dx.cl.Get(), b.transp_mvec_rg16f.data(), b.out_w, b.out_w, b.out_h);
-        if (guide_mask & rr_ref::kGuideSssAndCbt)
-        {
-            sss.StageAndRecordUpload(dx.cl.Get(), b.sss_r16f.data(), b.alloc_rw, active_rw, active_rh);
-            cbt.StageAndRecordUpload(dx.cl.Get(), b.cbt_rgba16f.data(), b.alloc_rw, active_rw, active_rh);
-        }
+        if (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideSssOnly))
+            sss.StageAndRecordUpload(dx.cl.Get(), b.sss_r16f.data(), b.alloc_rw, up_w, up_h);
+        if (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideCbtOnly))
+            cbt.StageAndRecordUpload(dx.cl.Get(), b.cbt_rgba16f.data(), b.alloc_rw, up_w, up_h);
         if (guide_mask & rr_ref::kGuideSpecularMvec)
-            spec_mvec.StageAndRecordUpload(dx.cl.Get(), b.spec_mvec_rg16f.data(), b.alloc_rw, active_rw, active_rh);
+            spec_mvec.StageAndRecordUpload(dx.cl.Get(), b.spec_mvec_rg16f.data(), b.alloc_rw, up_w, up_h);
         if (guide_mask & rr_ref::kGuideResponsivity)
-            resp.StageAndRecordUpload(dx.cl.Get(), b.resp_r16f.data(), b.alloc_rw, active_rw, active_rh);
+            resp.StageAndRecordUpload(dx.cl.Get(), b.resp_r16f.data(), b.alloc_rw, up_w, up_h);
         if (guide_mask & rr_ref::kGuideDepthOfField)
-            dof.StageAndRecordUpload(dx.cl.Get(), b.dof_r16f.data(), b.alloc_rw, active_rw, active_rh);
+            dof.StageAndRecordUpload(dx.cl.Get(), b.dof_r16f.data(), b.alloc_rw, up_w, up_h);
 
         dx.ExecuteAndSync("UploadFrame");
     }
@@ -1061,7 +1228,12 @@ NVSDK_NGX_Result CreateRrFeature(
     uint32_t out_h,
     int32_t perf_quality,
     uint32_t preset_hint,
-    NVSDK_NGX_Handle** out_handle)
+    NVSDK_NGX_Handle** out_handle,
+    int32_t create_flags = static_cast<int32_t>(NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
+                                                NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+                                                NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
+                                                NVSDK_NGX_DLSS_Feature_Flags_AutoExposure),
+    uint32_t roughness_mode = static_cast<uint32_t>(NVSDK_NGX_DLSS_Roughness_Mode_Packed))
 {
     params->Set(NVSDK_NGX_Parameter_CreationNodeMask, 1u);
     params->Set(NVSDK_NGX_Parameter_VisibilityNodeMask, 1u);
@@ -1070,14 +1242,10 @@ NVSDK_NGX_Result CreateRrFeature(
     params->Set(NVSDK_NGX_Parameter_OutWidth, static_cast<unsigned int>(out_w));
     params->Set(NVSDK_NGX_Parameter_OutHeight, static_cast<unsigned int>(out_h));
     params->Set(NVSDK_NGX_Parameter_PerfQualityValue, static_cast<int>(perf_quality));
-    params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags,
-                static_cast<int>(NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
-                                 NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
-                                 NVSDK_NGX_DLSS_Feature_Flags_DepthInverted |
-                                 NVSDK_NGX_DLSS_Feature_Flags_AutoExposure)); // 0x4B
+    params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, static_cast<int>(create_flags));
     params->Set(NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0);
     params->Set(NVSDK_NGX_Parameter_DLSS_Denoise_Mode, static_cast<int>(NVSDK_NGX_DLSS_Denoise_Mode_DLUnified));
-    params->Set(NVSDK_NGX_Parameter_DLSS_Roughness_Mode, static_cast<unsigned int>(NVSDK_NGX_DLSS_Roughness_Mode_Packed));
+    params->Set(NVSDK_NGX_Parameter_DLSS_Roughness_Mode, static_cast<unsigned int>(roughness_mode));
     params->Set(NVSDK_NGX_Parameter_Use_HW_Depth, static_cast<unsigned int>(NVSDK_NGX_DLSS_Depth_Type_HW));
 
     const unsigned int preset_ui = static_cast<unsigned int>(preset_hint);
@@ -1113,6 +1281,9 @@ void BindEvalParams(
         params->Set(key, tex);
     };
 
+    const unsigned int bx = static_cast<unsigned int>(fp.in_base_x);
+    const unsigned int by = static_cast<unsigned int>(fp.in_base_y);
+
     setTex(NVSDK_NGX_Parameter_Color, gpu.color.res.Get());
     setTex(NVSDK_NGX_Parameter_Output, gpu.output.res.Get());
     setTex(NVSDK_NGX_Parameter_Depth, gpu.depth.res.Get());
@@ -1127,30 +1298,33 @@ void BindEvalParams(
 
     params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, static_cast<unsigned int>(fp.rw));
     params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, static_cast<unsigned int>(fp.rh));
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, by);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y, by);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y, by);
     params->Set(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X, 0u);
     params->Set(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y, 0u);
 
     setTex(NVSDK_NGX_Parameter_DiffuseAlbedo, gpu.diffuse.res.Get());
     setTex(NVSDK_NGX_Parameter_SpecularAlbedo, gpu.specular.res.Get());
     setTex(NVSDK_NGX_Parameter_GBuffer_Normals, gpu.normals.res.Get());
-    setTex(NVSDK_NGX_Parameter_GBuffer_Roughness, nullptr); // Packed in Normals.w
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_Y, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_Y, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_Y, 0u);
+    setTex(NVSDK_NGX_Parameter_GBuffer_Roughness,
+           (guide_mask & rr_ref::kGuideUnpackedRough) ? gpu.rough.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_Y, by);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_Y, by);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_Y, by);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_Y, by);
 
     setTex(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance,
            (guide_mask & rr_ref::kGuideOmitHitDist) ? nullptr : gpu.hit_dist.res.Get());
-    params->Set(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_Y, by);
 
     params->Set(NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, static_cast<void*>(fp.world_to_view));
     params->Set(NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX, static_cast<void*>(fp.view_to_clip));
@@ -1158,18 +1332,18 @@ void BindEvalParams(
     // Optional guides (always explicitly set to resource or nullptr so stale bindings never persist)
     setTex(NVSDK_NGX_Parameter_DLSS_DisocclusionMask,
            (guide_mask & rr_ref::kGuideDisocclusion) ? gpu.disocc.res.Get() : nullptr);
-    params->Set(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_DisocclusionMask_Subrect_Base_Y, by);
 
     setTex(NVSDK_NGX_Parameter_DLSS_TransparencyLayer,
            (guide_mask & rr_ref::kGuideTranspLayer) ? gpu.transp.res.Get() : nullptr);
-    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_Y, by);
 
     setTex(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity,
            (guide_mask & rr_ref::kGuideTranspLayer) ? gpu.transp_op.res.Get() : nullptr);
-    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerOpacity_Subrect_Base_Y, by);
 
     setTex(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs,
            (guide_mask & rr_ref::kGuideTranspMvecs) ? gpu.transp_mvec.res.Get() : nullptr);
@@ -1177,24 +1351,24 @@ void BindEvalParams(
     params->Set(NVSDK_NGX_Parameter_DLSS_TransparencyLayerMvecs_Subrect_Base_Y, 0u);
 
     setTex(NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide,
-           (guide_mask & rr_ref::kGuideSssAndCbt) ? gpu.sss.res.Get() : nullptr);
+           (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideSssOnly)) ? gpu.sss.res.Get() : nullptr);
     setTex(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency,
-           (guide_mask & rr_ref::kGuideSssAndCbt) ? gpu.cbt.res.Get() : nullptr);
-    params->Set(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_Y, 0u);
+           (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideCbtOnly)) ? gpu.cbt.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_Y, by);
 
     setTex(NVSDK_NGX_Parameter_GBuffer_SpecularMvec,
            (guide_mask & rr_ref::kGuideSpecularMvec) ? gpu.spec_mvec.res.Get() : nullptr);
 
     setTex(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask,
            (guide_mask & rr_ref::kGuideResponsivity) ? gpu.resp.res.Get() : nullptr);
-    params->Set(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ResponsivityMask_Subrect_Base_Y, by);
 
     setTex(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide,
            (guide_mask & rr_ref::kGuideDepthOfField) ? gpu.dof.res.Get() : nullptr);
-    params->Set(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_X, 0u);
-    params->Set(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_Y, 0u);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_Y, by);
 }
 
 uint64_t QueryNgxReportedDlssdVramBytes(NVSDK_NGX_Parameter* cap_params)
@@ -1316,7 +1490,8 @@ void WriteEnvManifest(
     const fs::path& requested_dlssd,
     const LoadedDlssdInfo& loaded,
     int rr_available,
-    uint32_t preset_hint)
+    uint32_t preset_hint,
+    rr_ref::FixtureSuite suite = rr_ref::FixtureSuite::V1)
 {
     uint64_t req_bytes = 0;
     const std::string req_sha256 = Sha256FileHex(requested_dlssd, &req_bytes);
@@ -1331,7 +1506,7 @@ void WriteEnvManifest(
         fs::create_directories(manifest_path.parent_path());
     std::ofstream out(manifest_path, std::ios::binary);
     out << "{\n"
-        << "  \"fixture_version\": \"" << rr_ref::kFixtureVersion << "\",\n"
+        << "  \"fixture_version\": \"" << rr_ref::FixtureVersionForSuite(suite) << "\",\n"
         << "  \"gpu\": {\n"
         << "    \"description\": \"" << JsonEscape(WideToUtf8(dx.adapter_desc.Description)) << "\",\n"
         << "    \"vendor_id\": \"" << HexU32(dx.adapter_desc.VendorId) << "\",\n"
@@ -1386,6 +1561,7 @@ struct NgxSession
     std::string req_sha256;
     bool allow_dll_mismatch = false;
     bool dll_verified_after_create = false;
+    rr_ref::FixtureSuite suite = rr_ref::FixtureSuite::V1;
     LoadedDlssdInfo verified_loaded {};
     NVSDK_NGX_Parameter* params = nullptr;
     int rr_available = 0;
@@ -1395,8 +1571,10 @@ struct NgxSession
         const fs::path& loader_path,
         const fs::path& out_dir,
         uint32_t vendor_id,
-        bool allow_mismatch)
+        bool allow_mismatch,
+        rr_ref::FixtureSuite active_suite = rr_ref::FixtureSuite::V1)
     {
+        suite = active_suite;
         abs_dlssd = fs::absolute(dlssd_path);
         Require(fs::exists(abs_dlssd), "--dlssd file does not exist: " + WideToUtf8(abs_dlssd.wstring()));
         session_out_dir = fs::absolute(out_dir);
@@ -1446,7 +1624,7 @@ struct NgxSession
             return verified_loaded;
 
         verified_loaded = InspectLoadedDlssdModule();
-        WriteEnvManifest(session_out_dir / manifest_filename, dx, ngx, abs_dlssd, verified_loaded, rr_available, preset_hint);
+        WriteEnvManifest(session_out_dir / manifest_filename, dx, ngx, abs_dlssd, verified_loaded, rr_available, preset_hint, suite);
 
         if (!allow_dll_mismatch)
         {
@@ -1492,20 +1670,27 @@ struct NgxSession
     }
 };
 
-void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const fs::path& out_dir, bool allow_dll_mismatch, uint32_t vendor_id)
+void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const fs::path& out_dir,
+                  bool allow_dll_mismatch, uint32_t vendor_id, rr_ref::FixtureSuite suite)
 {
     fs::create_directories(out_dir);
     NgxSession sess;
-    sess.Start(dlssd_path, loader_path, out_dir, vendor_id, allow_dll_mismatch);
+    sess.Start(dlssd_path, loader_path, out_dir, vendor_id, allow_dll_mismatch, suite);
 
     const uint32_t rw = 1280, rh = 720, ow = 1920, oh = 1080;
+    const rr_ref::SceneId smoke_scene = (suite == rr_ref::FixtureSuite::V2_Motion)
+        ? rr_ref::SceneId::S1_TemporalHalton
+        : rr_ref::SceneId::S0_BenchParity;
+
     rr_ref::CpuFrameBuffers cpu;
     cpu.Allocate(rw, rh, ow, oh, rr_ref::kGuideNone);
-    rr_ref::PopulateStaticS0(cpu);
+    if (smoke_scene == rr_ref::SceneId::S0_BenchParity)
+        rr_ref::PopulateStaticS0(cpu);
 
     GpuSceneResources gpu;
     gpu.Allocate(sess.dx.dev.Get(), rw, rh, ow, oh, rr_ref::kGuideNone, true);
-    gpu.UploadFrame(sess.dx, cpu, rw, rh, rr_ref::kGuideNone);
+    if (smoke_scene == rr_ref::SceneId::S0_BenchParity)
+        gpu.UploadFrame(sess.dx, cpu, rw, rh, rr_ref::kGuideNone);
 
     NVSDK_NGX_Handle* handle = nullptr;
     const NVSDK_NGX_Result cr = CreateRrFeature(sess.ngx, sess.dx, sess.params, rw, rh, ow, oh,
@@ -1520,8 +1705,10 @@ void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const
     for (uint32_t f = 0; f < 16; ++f)
     {
         rr_ref::FrameScalarParams fp {};
-        rr_ref::PrepareFrame(rr_ref::SceneId::S0_BenchParity, rr_ref::kGuideNone, f, rw, rh, ow, oh,
-                             f == 0 ? 1 : 0, 6u, NVSDK_NGX_PerfQuality_Value_MaxQuality, fp, cpu);
+        rr_ref::PrepareFrame(smoke_scene, rr_ref::kGuideNone, f, rw, rh, ow, oh,
+                             f == 0 ? 1 : 0, 6u, NVSDK_NGX_PerfQuality_Value_MaxQuality, fp, cpu, suite);
+        if (smoke_scene != rr_ref::SceneId::S0_BenchParity)
+            gpu.UploadFrame(sess.dx, cpu, rw, rh, rr_ref::kGuideNone);
         BindEvalParams(sess.params, fp, rr_ref::kGuideNone, gpu);
 
         CheckHr(sess.dx.ca->Reset(), "Smoke eval ca->Reset");
@@ -1551,8 +1738,8 @@ void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const
     // Re-evaluate exact same frame 15 input with Reset=1 to verify temporal history sensitivity
     {
         rr_ref::FrameScalarParams fp {};
-        rr_ref::PrepareFrame(rr_ref::SceneId::S0_BenchParity, rr_ref::kGuideNone, 15u, rw, rh, ow, oh,
-                             1, 6u, NVSDK_NGX_PerfQuality_Value_MaxQuality, fp, cpu);
+        rr_ref::PrepareFrame(smoke_scene, rr_ref::kGuideNone, 15u, rw, rh, ow, oh,
+                             1, 6u, NVSDK_NGX_PerfQuality_Value_MaxQuality, fp, cpu, suite);
         BindEvalParams(sess.params, fp, rr_ref::kGuideNone, gpu);
         CheckHr(sess.dx.ca->Reset(), "Smoke reset-probe ca->Reset");
         CheckHr(sess.dx.cl->Reset(sess.dx.ca.Get(), nullptr), "Smoke reset-probe cl->Reset");
@@ -1581,6 +1768,8 @@ void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const
     std::ofstream sum(out_dir / "smoke_summary.json", std::ios::binary);
     sum << "{\n"
         << "  \"status\": \"PASS\",\n"
+        << "  \"fixture_version\": \"" << rr_ref::FixtureVersionForSuite(suite) << "\",\n"
+        << "  \"scene\": \"" << rr_ref::SceneName(smoke_scene) << "\",\n"
         << "  \"f000_output_sha256\": \"" << st_f000.sha256 << "\",\n"
         << "  \"f015_normal_output_sha256\": \"" << st_f015_normal.sha256 << "\",\n"
         << "  \"f015_forced_reset_output_sha256\": \"" << st_f015_reset.sha256 << "\",\n"
@@ -1591,14 +1780,15 @@ void RunSmokeMode(const fs::path& dlssd_path, const fs::path& loader_path, const
         << "  \"matches_expected_310_9_1_0_sha256\": " << ((loaded.loaded_sha256 == kExpectedDlssdSha256) ? "true" : "false") << "\n"
         << "}\n";
 
-    std::printf("[PASS] Smoke test succeeded on %s | DLL=%s (%s) | temporal_history_active=%s\n",
+    std::printf("[PASS] Smoke test succeeded on %s | suite=%s | DLL=%s (%s) | temporal_history_active=%s\n",
                 WideToUtf8(sess.dx.adapter_desc.Description).c_str(),
+                rr_ref::FixtureVersionForSuite(suite),
                 loaded.loaded_version.c_str(),
                 loaded.loaded_sha256.substr(0, 16).c_str(),
                 history_active ? "true" : "false");
 }
 
-void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_dir)
+void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_dir, rr_ref::FixtureSuite suite)
 {
     fs::create_directories(case_dir);
     rr_ref::CpuFrameBuffers cpu;
@@ -1611,10 +1801,14 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
     if (sc.scene == rr_ref::SceneId::S0_BenchParity)
         gpu.UploadFrame(sess.dx, cpu, sc.alloc_rw, sc.alloc_rh, sc.guide_mask);
 
+    const uint32_t roughness_mode = (suite == rr_ref::FixtureSuite::V2_Motion && (sc.guide_mask & rr_ref::kGuideUnpackedRough) != 0u) ? 0u : 1u;
+    const int32_t create_flags = (suite == rr_ref::FixtureSuite::V2_Motion) ? sc.v2_mod.create_flags : 0x4B;
+
     NVSDK_NGX_Handle* handle = nullptr;
     const NVSDK_NGX_Result cr = CreateRrFeature(sess.ngx, sess.dx, sess.params,
                                                 sc.alloc_rw, sc.alloc_rh, sc.out_w, sc.out_h,
-                                                sc.perf_quality, sc.preset_hint, &handle);
+                                                sc.perf_quality, sc.preset_hint, &handle,
+                                                create_flags, roughness_mode);
     Require(NVSDK_NGX_SUCCEED(cr) && handle != nullptr,
             sc.id + ": CreateFeature failed: " + HexU32(static_cast<uint32_t>(cr)));
     sess.EnsureLoadedDlssdVerified(sc.preset_hint);
@@ -1645,11 +1839,11 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
 
         rr_ref::FrameScalarParams fp {};
         rr_ref::PrepareFrame(sc.scene, sc.guide_mask, f, rw, rh, sc.out_w, sc.out_h,
-                             initial_reset, sc.preset_hint, sc.perf_quality, fp, cpu);
+                             initial_reset, sc.preset_hint, sc.perf_quality, fp, cpu, suite, sc.v2_mod);
         if (sc.scene != rr_ref::SceneId::S0_BenchParity)
-            gpu.UploadFrame(sess.dx, cpu, rw, rh, sc.guide_mask);
+            gpu.UploadFrame(sess.dx, cpu, rw, rh, sc.guide_mask, fp.in_base_x, fp.in_base_y);
 
-        const std::string initial_in_sha = rr_ref::ComputeCanonicalFrameInputSha256(fp, sc.guide_mask, cpu);
+        const std::string initial_in_sha = rr_ref::ComputeCanonicalFrameInputSha256(fp, sc.guide_mask, cpu, suite);
 
         int recreated = 0;
         int32_t effective_reset = initial_reset;
@@ -1689,11 +1883,12 @@ void RunQualityCase(NgxSession& sess, const SuiteCase& sc, const fs::path& case_
                     handle = nullptr;
                 }
                 const NVSDK_NGX_Result rcr = CreateRrFeature(sess.ngx, sess.dx, sess.params, rw, rh, sc.out_w, sc.out_h,
-                                                             sc.perf_quality, sc.preset_hint, &handle);
+                                                             sc.perf_quality, sc.preset_hint, &handle,
+                                                             create_flags, roughness_mode);
                 recreated = 1;
                 effective_reset = 1;
                 fp.reset = 1;
-                effective_in_sha = rr_ref::ComputeCanonicalFrameInputSha256(fp, sc.guide_mask, cpu);
+                effective_in_sha = rr_ref::ComputeCanonicalFrameInputSha256(fp, sc.guide_mask, cpu, suite);
 
                 if (NVSDK_NGX_SUCCEED(rcr) && handle != nullptr)
                 {
@@ -1966,12 +2161,62 @@ void RunTimingCaseRound(NgxSession& sess, const SuiteCase& sc, uint32_t round_id
                 drs_status.c_str(), st_d.median, delta_steady_mb, toMb(ngx_stats_vram));
 }
 
-void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const fs::path& out_dir)
+struct ImageDiffStats
 {
+    size_t diff_halfs = 0;
+    uint32_t max_ulp = 0;
+    double psnr01_db = 999.0;
+};
+
+ImageDiffStats CompareRgba16f(const std::vector<uint16_t>& ref_px, const std::vector<uint16_t>& cur_px)
+{
+    ImageDiffStats d {};
+    if (ref_px.size() != cur_px.size() || ref_px.empty())
+        return d;
+    double se = 0.0;
+    size_t rgb_n = 0;
+    for (size_t i = 0; i < cur_px.size(); ++i)
+    {
+        const uint16_t a = ref_px[i], b = cur_px[i];
+        if (a != b)
+        {
+            ++d.diff_halfs;
+            d.max_ulp = std::max(d.max_ulp, static_cast<uint32_t>(a > b ? a - b : b - a));
+        }
+        if ((i & 3u) != 3u && rr_ref::IsFiniteHalf(a) && rr_ref::IsFiniteHalf(b))
+        {
+            const double da = std::clamp(rr_ref::HalfToDouble(a), 0.0, 1.0);
+            const double db = std::clamp(rr_ref::HalfToDouble(b), 0.0, 1.0);
+            se += (da - db) * (da - db);
+            ++rgb_n;
+        }
+    }
+    if (se > 0.0 && rgb_n > 0)
+        d.psnr01_db = 10.0 * std::log10(1.0 / (se / static_cast<double>(rgb_n)));
+    return d;
+}
+
+bool TryLoadRawRgba16f(const fs::path& file_path, size_t expected_halfs, std::vector<uint16_t>& out_px)
+{
+    std::error_code ec;
+    if (!fs::exists(file_path, ec) || fs::file_size(file_path, ec) != expected_halfs * sizeof(uint16_t))
+        return false;
+    std::ifstream f(file_path, std::ios::binary);
+    if (!f) return false;
+    out_px.resize(expected_halfs);
+    f.read(reinterpret_cast<char*>(out_px.data()), static_cast<std::streamsize>(expected_halfs * sizeof(uint16_t)));
+    return static_cast<bool>(f);
+}
+
+void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const fs::path& out_dir, rr_ref::FixtureSuite suite)
+{
+    const bool is_v2 = (suite == rr_ref::FixtureSuite::V2_Motion);
     fs::create_directories(out_dir);
-    std::vector<uint16_t> baseline_f015;
+    std::map<std::string, std::vector<uint16_t>> saved_f015;
     std::ofstream js(out_dir / "probes_summary.json", std::ios::binary);
-    js << "{\n  \"probes\": [\n";
+    js << "{\n"
+       << "  \"fixture_version\": \"" << rr_ref::FixtureVersionForSuite(suite) << "\",\n"
+       << "  \"probes\": [\n";
 
     for (size_t idx = 0; idx < probes.size(); ++idx)
     {
@@ -1984,10 +2229,19 @@ void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const
         GpuSceneResources gpu;
         gpu.Allocate(sess.dx.dev.Get(), sc.alloc_rw, sc.alloc_rh, sc.out_w, sc.out_h, sc.guide_mask, true);
 
+        // In v2_motion, when testing non-zero input Subrect.Base (P14), D3D12 resources are allocated at (alloc_rw, alloc_rh)
+        // while CreateFeature receives the active render subrect dimensions (steady_rw, steady_rh) = 1280x720 so internal
+        // network/grid dimensions match P00 1:1.
+        const uint32_t create_rw = (is_v2 && (sc.v2_mod.in_base_x != 0u || sc.v2_mod.in_base_y != 0u)) ? sc.steady_rw : sc.alloc_rw;
+        const uint32_t create_rh = (is_v2 && (sc.v2_mod.in_base_x != 0u || sc.v2_mod.in_base_y != 0u)) ? sc.steady_rh : sc.alloc_rh;
+        const int32_t create_flags = is_v2 ? sc.v2_mod.create_flags : 0x4B;
+        const uint32_t roughness_mode = (is_v2 && (sc.guide_mask & rr_ref::kGuideUnpackedRough) != 0u) ? 0u : 1u;
+
         NVSDK_NGX_Handle* handle = nullptr;
         const NVSDK_NGX_Result cr = CreateRrFeature(sess.ngx, sess.dx, sess.params,
-                                                    sc.alloc_rw, sc.alloc_rh, sc.out_w, sc.out_h,
-                                                    sc.perf_quality, sc.preset_hint, &handle);
+                                                    create_rw, create_rh, sc.out_w, sc.out_h,
+                                                    sc.perf_quality, sc.preset_hint, &handle,
+                                                    create_flags, roughness_mode);
         NVSDK_NGX_Result last_er = cr;
         std::vector<uint16_t> f015_px;
         PixelStats pst {};
@@ -1999,8 +2253,8 @@ void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const
             {
                 rr_ref::FrameScalarParams fp {};
                 rr_ref::PrepareFrame(sc.scene, sc.guide_mask, f, sc.steady_rw, sc.steady_rh, sc.out_w, sc.out_h,
-                                     f == 0 ? 1 : 0, sc.preset_hint, sc.perf_quality, fp, cpu);
-                gpu.UploadFrame(sess.dx, cpu, sc.steady_rw, sc.steady_rh, sc.guide_mask);
+                                     f == 0 ? 1 : 0, sc.preset_hint, sc.perf_quality, fp, cpu, suite, sc.v2_mod);
+                gpu.UploadFrame(sess.dx, cpu, sc.steady_rw, sc.steady_rh, sc.guide_mask, fp.in_base_x, fp.in_base_y);
                 BindEvalParams(sess.params, fp, sc.guide_mask, gpu);
 
                 CheckHr(sess.dx.ca->Reset(), "Probe ca->Reset");
@@ -2022,8 +2276,7 @@ void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const
                 gpu.ReadbackOutputPixels(sess.dx, f015_px);
                 pst = AnalyzeOutputRgba16f(f015_px);
                 SaveRawRgba16f(pdir / "f015.rgba16f", f015_px);
-                if (sc.id == "P00_baseline_s1_g0")
-                    baseline_f015 = f015_px;
+                saved_f015[sc.id] = f015_px;
             }
 #ifdef RR_USE_OFFICIAL_NGX_SDK
             NVSDK_NGX_D3D12_ReleaseFeature(handle);
@@ -2032,63 +2285,120 @@ void RunProbesPass(NgxSession& sess, const std::vector<SuiteCase>& probes, const
 #endif
         }
 
+        auto findRefPx = [&](const std::string& ref_id, size_t expected_halfs) -> const std::vector<uint16_t>* {
+            auto it = saved_f015.find(ref_id);
+            if (it != saved_f015.end() && it->second.size() == expected_halfs)
+                return &it->second;
+            std::vector<uint16_t> disk_px;
+            if (TryLoadRawRgba16f(out_dir / ref_id / "f015.rgba16f", expected_halfs, disk_px))
+            {
+                saved_f015[ref_id] = std::move(disk_px);
+                return &saved_f015[ref_id];
+            }
+            return nullptr;
+        };
+
         std::string status = "unsupported";
-        uint32_t max_ulp = 0;
-        size_t diff_halfs = 0;
-        double psnr01 = 999.0;
+        ImageDiffStats vs_p00 {};
+        ImageDiffStats vs_pair {};
+        bool have_pair = false;
 
         if (NVSDK_NGX_SUCCEED(cr) && NVSDK_NGX_SUCCEED(last_er) && !f015_px.empty())
         {
-            if (sc.id == "P00_baseline_s1_g0" || baseline_f015.size() != f015_px.size())
+            const auto* p00_px = findRefPx("P00_baseline_s1_g0", f015_px.size());
+            if (sc.id == "P00_baseline_s1_g0" || p00_px == nullptr)
             {
                 status = "baseline_ok";
             }
             else
             {
-                double se = 0.0;
-                size_t rgb_n = 0;
-                for (size_t i = 0; i < f015_px.size(); ++i)
+                vs_p00 = CompareRgba16f(*p00_px, f015_px);
+                if (is_v2 && sc.expect_equiv_p00)
                 {
-                    const uint16_t a = baseline_f015[i], b = f015_px[i];
-                    if (a != b)
-                    {
-                        ++diff_halfs;
-                        max_ulp = std::max(max_ulp, static_cast<uint32_t>(a > b ? a - b : b - a));
-                    }
-                    if ((i & 3u) != 3u && rr_ref::IsFiniteHalf(a) && rr_ref::IsFiniteHalf(b))
-                    {
-                        const double da = std::clamp(rr_ref::HalfToDouble(a), 0.0, 1.0);
-                        const double db = std::clamp(rr_ref::HalfToDouble(b), 0.0, 1.0);
-                        se += (da - db) * (da - db);
-                        ++rgb_n;
-                    }
+                    if (vs_p00.diff_halfs == 0)
+                        status = "supported_equiv_exact";
+                    else if (vs_p00.psnr01_db >= 50.0)
+                        status = "supported_equiv_close";
+                    else
+                        status = "supported_diverged";
                 }
-                if (se > 0.0 && rgb_n > 0)
-                    psnr01 = 10.0 * std::log10(1.0 / (se / static_cast<double>(rgb_n)));
-                status = (diff_halfs > 0) ? "supported_active" : "supported_noop";
+                else
+                {
+                    status = (vs_p00.diff_halfs > 0) ? "supported_active" : "supported_noop";
+                }
+            }
+
+            if (!sc.pair_ref_id.empty())
+            {
+                if (const auto* pair_px = findRefPx(sc.pair_ref_id, f015_px.size()))
+                {
+                    vs_pair = CompareRgba16f(*pair_px, f015_px);
+                    have_pair = true;
+                }
             }
         }
 
-        js << "    {\n"
-           << "      \"id\": \"" << sc.id << "\",\n"
-           << "      \"preset_hint\": " << sc.preset_hint << ",\n"
-           << "      \"guide_mask\": " << sc.guide_mask << ",\n"
-           << "      \"render\": [" << sc.steady_rw << ", " << sc.steady_rh << "],\n"
-           << "      \"create_result_hex\": \"" << HexU32(static_cast<uint32_t>(cr)) << "\",\n"
-           << "      \"eval_result_hex\": \"" << HexU32(static_cast<uint32_t>(last_er)) << "\",\n"
-           << "      \"status\": \"" << status << "\",\n"
-           << "      \"f015_output_sha256\": \"" << pst.sha256 << "\",\n"
-           << "      \"non_finite\": " << pst.non_finite << ",\n"
-           << "      \"diff_vs_p00_halfs\": " << diff_halfs << ",\n"
-           << "      \"diff_vs_p00_max_ulp\": " << max_ulp << ",\n"
-           << "      \"diff_vs_p00_psnr01_db\": " << std::fixed << std::setprecision(3) << psnr01 << "\n"
-           << "    }" << (idx + 1 < probes.size() ? "," : "") << "\n";
+        const char* probe_kind = (sc.id == "P00_baseline_s1_g0")
+            ? "baseline"
+            : (sc.expect_equiv_p00 ? "equivalence_to_p00" : "delta_from_ref");
 
-        std::printf("[PROBE %s] status=%s | create=%s eval=%s | diff_halfs=%zu (max_ulp=%u, PSNR01=%.2f dB)\n",
-                    sc.id.c_str(), status.c_str(),
-                    HexU32(static_cast<uint32_t>(cr)).c_str(),
-                    HexU32(static_cast<uint32_t>(last_er)).c_str(),
-                    diff_halfs, max_ulp, psnr01);
+        std::ostringstream entry;
+        entry << "    {\n"
+              << "      \"id\": \"" << sc.id << "\",\n"
+              << "      \"probe_kind\": \"" << probe_kind << "\",\n"
+              << "      \"preset_hint\": " << sc.preset_hint << ",\n"
+              << "      \"create_flags\": " << create_flags << ",\n"
+              << "      \"roughness_mode\": " << roughness_mode << ",\n"
+              << "      \"guide_mask\": " << sc.guide_mask << ",\n"
+              << "      \"alloc_render\": [" << sc.alloc_rw << ", " << sc.alloc_rh << "],\n"
+              << "      \"render\": [" << sc.steady_rw << ", " << sc.steady_rh << "],\n"
+              << "      \"in_subrect_base\": [" << (is_v2 ? sc.v2_mod.in_base_x : 0u) << ", " << (is_v2 ? sc.v2_mod.in_base_y : 0u) << "],\n"
+              << "      \"create_result_hex\": \"" << HexU32(static_cast<uint32_t>(cr)) << "\",\n"
+              << "      \"eval_result_hex\": \"" << HexU32(static_cast<uint32_t>(last_er)) << "\",\n"
+              << "      \"status\": \"" << status << "\",\n"
+              << "      \"f015_output_sha256\": \"" << pst.sha256 << "\",\n"
+              << "      \"non_finite\": " << pst.non_finite << ",\n"
+              << std::fixed << std::setprecision(6)
+              << "      \"f015_mean_luma\": " << pst.mean_luma << ",\n"
+              << "      \"diff_vs_p00_halfs\": " << vs_p00.diff_halfs << ",\n"
+              << "      \"diff_vs_p00_max_ulp\": " << vs_p00.max_ulp << ",\n"
+              << std::fixed << std::setprecision(3)
+              << "      \"diff_vs_p00_psnr01_db\": " << vs_p00.psnr01_db;
+        if (have_pair)
+        {
+            entry << ",\n"
+                  << "      \"pair_ref_id\": \"" << sc.pair_ref_id << "\",\n"
+                  << "      \"diff_vs_pair_halfs\": " << vs_pair.diff_halfs << ",\n"
+                  << "      \"diff_vs_pair_max_ulp\": " << vs_pair.max_ulp << ",\n"
+                  << "      \"diff_vs_pair_psnr01_db\": " << vs_pair.psnr01_db << "\n";
+        }
+        else
+        {
+            entry << "\n";
+        }
+        entry << "    }";
+
+        {
+            std::ofstream single_js(pdir / "probe_result.json", std::ios::binary);
+            single_js << entry.str() << "\n";
+        }
+        js << entry.str() << (idx + 1 < probes.size() ? "," : "") << "\n";
+
+        if (have_pair)
+        {
+            std::printf("[PROBE %s] status=%s | vs_P00=%zu halfs (%.2f dB) | vs_%s=%zu halfs (max_ulp=%u, %.2f dB)\n",
+                        sc.id.c_str(), status.c_str(),
+                        vs_p00.diff_halfs, vs_p00.psnr01_db,
+                        sc.pair_ref_id.c_str(), vs_pair.diff_halfs, vs_pair.max_ulp, vs_pair.psnr01_db);
+        }
+        else
+        {
+            std::printf("[PROBE %s] status=%s | create=%s eval=%s | diff_vs_p00=%zu halfs (max_ulp=%u, PSNR01=%.2f dB)\n",
+                        sc.id.c_str(), status.c_str(),
+                        HexU32(static_cast<uint32_t>(cr)).c_str(),
+                        HexU32(static_cast<uint32_t>(last_er)).c_str(),
+                        vs_p00.diff_halfs, vs_p00.max_ulp, vs_p00.psnr01_db);
+        }
     }
     js << "  ]\n}\n";
     Require(sess.dll_verified_after_create || sess.allow_dll_mismatch,
@@ -2185,10 +2495,10 @@ void PrintUsage()
     std::printf(
         "Usage:\n"
         "  ngx_rr_bench --self-test\n"
-        "  ngx_rr_bench --dump-fixture-hashes <cases.json>\n"
-        "  ngx_rr_bench --verify-fixtures <cases.json>\n"
-        "  ngx_rr_bench --smoke --dlssd <nvngx_dlssd.dll> --out <dir> [--ngx-loader <path>] [--allow-dll-mismatch]\n"
-        "  ngx_rr_bench --pass <quality-core|timing-core|quality-ext|probes> --dlssd <nvngx_dlssd.dll> --out <dir> [--case <id>] [--allow-dll-mismatch]\n"
+        "  ngx_rr_bench [--suite <v1|v2_motion>] --dump-fixture-hashes <cases.json>\n"
+        "  ngx_rr_bench [--suite <v1|v2_motion>] --verify-fixtures <cases.json>\n"
+        "  ngx_rr_bench [--suite <v1|v2_motion>] --smoke --dlssd <nvngx_dlssd.dll> --out <dir> [--ngx-loader <path>] [--process-exit-teardown] [--allow-dll-mismatch]\n"
+        "  ngx_rr_bench [--suite <v1|v2_motion>] --pass <quality-core|timing-core|quality-ext|probes> --dlssd <nvngx_dlssd.dll> --out <dir> [--case <id>] [--process-exit-teardown] [--allow-dll-mismatch]\n"
         "  ngx_rr_bench --profile-target <1080p_qual|4k_qual|4k_perf> --dlssd <nvngx_dlssd.dll> --out <dir> [--profile-frame 32] [--allow-dll-mismatch]\n");
 }
 
@@ -2217,6 +2527,8 @@ try
     bool do_self_test = false;
     bool do_smoke = false;
     bool allow_dll_mismatch = false;
+    rr_ref::FixtureSuite suite = rr_ref::FixtureSuite::V1;
+    bool suite_explicit = false;
     fs::path dump_hashes_path;
     fs::path verify_hashes_path;
     std::string pass_name;
@@ -2236,6 +2548,7 @@ try
             return args[++i];
         };
         if (a == "--self-test") do_self_test = true;
+        else if (a == "--suite") { suite = ParseFixtureSuite(next()); suite_explicit = true; }
         else if (a == "--dump-fixture-hashes") dump_hashes_path = Utf8ToPath(next());
         else if (a == "--verify-fixtures") verify_hashes_path = Utf8ToPath(next());
         else if (a == "--smoke") do_smoke = true;
@@ -2253,24 +2566,26 @@ try
         else throw std::runtime_error("Unknown CLI option: " + a);
     }
 
-    // Always run fast deterministic math & SHA-256 self-tests at startup!
+    // Always run fast deterministic math, SHA-256 & v2_motion invariant self-tests at startup!
     rr_ref::RunSelfTests();
     if (do_self_test)
-        std::printf("[PASS] Self-tests passed (FloatToHalfRNE 1.9999f->0x4000, Isqrt64, SHA-256 FIPS-180-4)\n");
+        std::printf("[PASS] Self-tests passed (FloatToHalfRNE, Isqrt64, SHA-256 FIPS-180-4, v2_motion scene invariants)\n");
 
     if (!dump_hashes_path.empty())
     {
-        DumpFixtureHashesJson(dump_hashes_path);
-        std::printf("[PASS] Wrote canonical suite & fixture input hashes to %s\n", WideToUtf8(dump_hashes_path.wstring()).c_str());
+        DumpFixtureHashesJson(dump_hashes_path, suite);
+        std::printf("[PASS] Wrote %s suite & fixture input hashes to %s\n",
+                    rr_ref::FixtureVersionForSuite(suite),
+                    WideToUtf8(dump_hashes_path.wstring()).c_str());
     }
 
     if (!verify_hashes_path.empty())
-        VerifyFixturesAgainstJson(verify_hashes_path);
+        VerifyFixturesAgainstJson(verify_hashes_path, suite, suite_explicit);
 
     if (do_smoke)
     {
         Require(!dlssd_path.empty(), "--smoke requires --dlssd <path-to-nvngx_dlssd.dll>");
-        RunSmokeMode(dlssd_path, loader_path, out_dir, allow_dll_mismatch, vendor_id);
+        RunSmokeMode(dlssd_path, loader_path, out_dir, allow_dll_mismatch, vendor_id, suite);
     }
 
     if (!pass_name.empty())
@@ -2283,21 +2598,22 @@ try
         else if (pass_name == "probes") target_group = PassGroup::Probes;
         else throw std::runtime_error("Unknown --pass value: " + pass_name);
 
-        const auto all_cases = BuildCanonicalSuite();
+        const auto all_cases = BuildSuite(suite);
         std::vector<SuiteCase> selected;
         for (const auto& sc : all_cases)
         {
             if (sc.group == target_group && (filter_case_id.empty() || sc.id == filter_case_id))
                 selected.push_back(sc);
         }
-        Require(!selected.empty(), "No suite cases matched --pass " + pass_name + (filter_case_id.empty() ? "" : (" --case " + filter_case_id)));
+        Require(!selected.empty(), "No suite cases matched --suite " + std::string(rr_ref::FixtureVersionForSuite(suite)) +
+                                   " --pass " + pass_name + (filter_case_id.empty() ? "" : (" --case " + filter_case_id)));
 
         NgxSession sess;
-        sess.Start(dlssd_path, loader_path, out_dir, vendor_id, allow_dll_mismatch);
+        sess.Start(dlssd_path, loader_path, out_dir, vendor_id, allow_dll_mismatch, suite);
 
         if (target_group == PassGroup::Probes)
         {
-            RunProbesPass(sess, selected, out_dir);
+            RunProbesPass(sess, selected, out_dir, suite);
         }
         else if (target_group == PassGroup::TimingCore)
         {
@@ -2311,7 +2627,7 @@ try
         else
         {
             for (const auto& sc : selected)
-                RunQualityCase(sess, sc, out_dir / sc.id);
+                RunQualityCase(sess, sc, out_dir / sc.id, suite);
         }
     }
 

@@ -238,6 +238,8 @@ static_assert(sizeof(NVSDK_NGX_ParameterVtbl) == 17 * sizeof(void*), "NVSDK_NGX_
 #define NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_Y "DLSS.Input.SpecularAlbedo.Subrect.Base.Y"
 #define NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_X     "DLSS.Input.Normals.Subrect.Base.X"
 #define NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_Y     "DLSS.Input.Normals.Subrect.Base.Y"
+#define NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_X   "DLSS.Input.Roughness.Subrect.Base.X"
+#define NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_Y   "DLSS.Input.Roughness.Subrect.Base.Y"
 #define NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X            "DLSS.Output.Subrect.Base.X"
 #define NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y            "DLSS.Output.Subrect.Base.Y"
 #define NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_X "DLSSD.SpecularHitDistance.Subrect.Base.X"
