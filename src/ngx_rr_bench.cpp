@@ -497,14 +497,23 @@ std::vector<SuiteCase> BuildV2MotionSuite()
     c.push_back({"P10_no_hit_plain", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideOmitHitDist,
                  1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp});
 
-    // P13: Manual Pre.Exposure / Exposure.Scale step (AutoExposure flag cleared: 0x0B)
+    // P13a: Manual scalar Pre.Exposure / Exposure.Scale step (AutoExposure flag cleared: 0x0B, ExposureTexture = null)
     {
         rr_ref::V2FrameModifiers m {};
         m.create_flags = 0x0B; // IsHDR(1) | MVLowRes(2) | DepthInverted(8), AutoExposure=0
         m.manual_exposure_step = true;
-        c.push_back({"P13_exposure_no_auto", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
+        c.push_back({"P13a_exposure_no_auto", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideNone,
                      1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
                      m, {}, false});
+    }
+    // P13b: Manual 1x1 R32F ExposureTexture step (0.5 -> 2.0 at f008) with Pre.Exposure=2.0, Exposure.Scale=1.0 (paired vs P13a)
+    {
+        rr_ref::V2FrameModifiers m {};
+        m.create_flags = 0x0B;
+        m.manual_exposure_tex_step = true;
+        c.push_back({"P13b_exposure_tex_1x1", PassGroup::Probes, SceneId::S1_TemporalHalton, rr_ref::kGuideExposureTex,
+                     1280, 720, 1280, 720, 1920, 1080, NVSDK_NGX_PerfQuality_Value_MaxQuality, 6u, false, 0, 16, 0, 1, kp,
+                     m, "P13a_exposure_no_auto", false});
     }
     // P14: Non-zero input Subrect.Base = (32, 24) inside 1344x768 D3D12 textures with magenta sentinel border (should match P00)
     {
@@ -1076,7 +1085,7 @@ struct GpuTex2D
 
 struct GpuSceneResources
 {
-    GpuTex2D color, diffuse, specular, normals, rough, depth, mvec, hit_dist;
+    GpuTex2D color, diffuse, specular, normals, rough, depth, mvec, hit_dist, exposure_tex;
     GpuTex2D disocc, transp, transp_op, transp_mvec, sss, cbt, spec_mvec, resp, dof;
     GpuTex2D output;
     ComPtr<ID3D12Resource> output_readback;
@@ -1114,6 +1123,8 @@ struct GpuSceneResources
             resp.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16_FLOAT, 2, false, D3D12_RESOURCE_STATE_COPY_DEST);
         if (guide_mask & rr_ref::kGuideDepthOfField)
             dof.Create(dev, max_rw, max_rh, DXGI_FORMAT_R16_FLOAT, 2, false, D3D12_RESOURCE_STATE_COPY_DEST);
+        if (guide_mask & rr_ref::kGuideExposureTex)
+            exposure_tex.Create(dev, 1, 1, DXGI_FORMAT_R32_FLOAT, 4, false, D3D12_RESOURCE_STATE_COPY_DEST);
 
         output.Create(dev, out_w, out_h, DXGI_FORMAT_R16G16B16A16_FLOAT, 8, true, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
@@ -1176,6 +1187,8 @@ struct GpuSceneResources
             resp.StageAndRecordUpload(dx.cl.Get(), b.resp_r16f.data(), b.alloc_rw, up_w, up_h);
         if (guide_mask & rr_ref::kGuideDepthOfField)
             dof.StageAndRecordUpload(dx.cl.Get(), b.dof_r16f.data(), b.alloc_rw, up_w, up_h);
+        if (guide_mask & rr_ref::kGuideExposureTex)
+            exposure_tex.StageAndRecordUpload(dx.cl.Get(), &b.exposure_tex_r32f, 1u, 1u, 1u);
 
         dx.ExecuteAndSync("UploadFrame");
     }
@@ -1293,6 +1306,8 @@ void BindEvalParams(
     params->Set(NVSDK_NGX_Parameter_Reset, static_cast<int>(fp.reset));
     params->Set(NVSDK_NGX_Parameter_MV_Scale_X, fp.mv_scale_x);
     params->Set(NVSDK_NGX_Parameter_MV_Scale_Y, fp.mv_scale_y);
+    setTex(NVSDK_NGX_Parameter_ExposureTexture,
+           (guide_mask & rr_ref::kGuideExposureTex) ? gpu.exposure_tex.res.Get() : nullptr);
     params->Set(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, fp.pre_exposure);
     params->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, fp.exposure_scale);
 
@@ -1352,6 +1367,8 @@ void BindEvalParams(
 
     setTex(NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide,
            (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideSssOnly)) ? gpu.sss.res.Get() : nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide_Subrect_Base_X, bx);
+    params->Set(NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide_Subrect_Base_Y, by);
     setTex(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency,
            (guide_mask & (rr_ref::kGuideSssAndCbt | rr_ref::kGuideCbtOnly)) ? gpu.cbt.res.Get() : nullptr);
     params->Set(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_X, bx);

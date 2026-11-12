@@ -211,6 +211,7 @@ static_assert(sizeof(NVSDK_NGX_ParameterVtbl) == 17 * sizeof(void*), "NVSDK_NGX_
 #define NVSDK_NGX_Parameter_MV_Scale_X             "MV.Scale.X"
 #define NVSDK_NGX_Parameter_MV_Scale_Y             "MV.Scale.Y"
 #define NVSDK_NGX_Parameter_Reset                  "Reset"
+#define NVSDK_NGX_Parameter_ExposureTexture        "ExposureTexture"
 #define NVSDK_NGX_Parameter_DLSS_Pre_Exposure      "DLSS.Pre.Exposure"
 #define NVSDK_NGX_Parameter_DLSS_Exposure_Scale    "DLSS.Exposure.Scale"
 
@@ -266,6 +267,8 @@ static_assert(sizeof(NVSDK_NGX_ParameterVtbl) == 17 * sizeof(void*), "NVSDK_NGX_
 #define NVSDK_NGX_Parameter_DLSSD_ColorBeforeFog_Subrect_Base_X "DLSSD.ColorBeforeFog.Subrect.Base.X"
 #define NVSDK_NGX_Parameter_DLSSD_ColorBeforeFog_Subrect_Base_Y "DLSSD.ColorBeforeFog.Subrect.Base.Y"
 #define NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide "DLSSD.ScreenSpaceSubsurfaceScatteringGuide"
+#define NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide_Subrect_Base_X "DLSSD.ScreenSpaceSubsurfaceScatteringGuide.Subrect.Base.X"
+#define NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide_Subrect_Base_Y "DLSSD.ScreenSpaceSubsurfaceScatteringGuide.Subrect.Base.Y"
 #define NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide         "DLSSD.DepthOfFieldGuide"
 #define NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_X "DLSSD.DepthOfFieldGuide.Subrect.Base.X"
 #define NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide_Subrect_Base_Y "DLSSD.DepthOfFieldGuide.Subrect.Base.Y"

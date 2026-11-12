@@ -359,9 +359,10 @@ enum GuideMask : uint32_t
     kGuideDepthOfField  = 1u << 6, // DLSSD.DepthOfFieldGuide (R16F)
     kGuideOmitHitDist   = 1u << 7, // Omit DLSSD.SpecularHitDistance
     // v2_motion isolated & extended capability flags:
-    kGuideSssOnly       = 1u << 8, // DLSSD.ScreenSpaceSubsurfaceScatteringGuide (R16F) without CBT
-    kGuideCbtOnly       = 1u << 9, // DLSSD.ColorBeforeTransparency (RGBA16F, cbt != color) without SSS
-    kGuideUnpackedRough = 1u << 10 // GBuffer.Roughness (R16F) with Roughness.Mode = Unpacked (0) & normals.w = 0
+    kGuideSssOnly       = 1u << 8,  // DLSSD.ScreenSpaceSubsurfaceScatteringGuide (R16F) without CBT
+    kGuideCbtOnly       = 1u << 9,  // DLSSD.ColorBeforeTransparency (RGBA16F, cbt != color) without SSS
+    kGuideUnpackedRough = 1u << 10, // GBuffer.Roughness (R16F) with Roughness.Mode = Unpacked (0) & normals.w = 0
+    kGuideExposureTex   = 1u << 11  // ExposureTexture (1x1 R32F) with AutoExposure cleared
 };
 
 struct V2FrameModifiers
@@ -373,7 +374,8 @@ struct V2FrameModifiers
     float mv_scale_y = 1.0f;          // NVSDK_NGX_Parameter_MV_Scale_Y
     int64_t mv_tex_scale_num = 1;     // Integer pre-multiplier applied to generated pixel MVs (e.g. -2 with mv_scale = -0.5f)
     int32_t mv_jitter_delta_sign = 0;     // +1 adds +(prev_jitter - curr_jitter), -1 adds +(curr_jitter - prev_jitter)
-    bool manual_exposure_step = false;    // Steps Pre.Exposure=2.0f, Exposure.Scale=0.5f (f<8) -> 2.0f (f>=8)
+    bool manual_exposure_step = false;    // Steps Pre.Exposure=2.0f, Exposure.Scale=0.5f (f<8) -> 2.0f (f>=8), ExposureTexture=null
+    bool manual_exposure_tex_step = false;// Steps 1x1 R32F ExposureTexture=0.5f (f<8) -> 2.0f (f>=8), Pre.Exposure=2.0f, Exposure.Scale=1.0f
 };
 
 // Exact integer Halton radical inverse in Q20 centered around 0: range [-524288, +524288] => [-0.5, +0.5].
@@ -467,6 +469,7 @@ struct CpuFrameBuffers
     std::vector<uint16_t> resp_r16f;            // 1 half/px   (2 B), rw x rh (R16F in [-1, 1])
     std::vector<uint16_t> dof_r16f;             // 1 half/px   (2 B), rw x rh
     std::vector<uint16_t> rough_r16f;           // 1 half/px   (2 B), rw x rh (unpacked GBuffer.Roughness)
+    float                 exposure_tex_r32f = 1.0f; // 1x1 R32F ExposureTexture scalar value
 
     void Allocate(uint32_t max_rw, uint32_t max_rh, uint32_t target_ow, uint32_t target_oh, uint32_t all_guides_mask)
     {
@@ -596,10 +599,17 @@ inline void PrepareFrame(
     params.mv_scale_y = is_v2 ? v2_mod.mv_scale_y : 1.0f;
     params.pre_exposure = 1.0f;
     params.exposure_scale = 1.0f;
+    b.exposure_tex_r32f = 1.0f;
     if (is_v2 && v2_mod.manual_exposure_step)
     {
         params.pre_exposure = 2.0f;
         params.exposure_scale = (frame_idx < 8u) ? 0.5f : 2.0f;
+    }
+    if (is_v2 && v2_mod.manual_exposure_tex_step)
+    {
+        params.pre_exposure = 2.0f;
+        params.exposure_scale = 1.0f;
+        b.exposure_tex_r32f = (frame_idx < 8u) ? 0.5f : 2.0f;
     }
     FillCanonicalMatrices(params);
 
@@ -1061,6 +1071,11 @@ inline std::string ComputeCanonicalFrameInputSha256(
         hashSubrect(18u, b.dof_r16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 2u);
     if (is_v2 && (guide_mask & kGuideUnpackedRough))
         hashSubrect(19u, b.rough_r16f.data(), b.alloc_rw, bx, by, p.rw, p.rh, 2u);
+    if (is_v2 && (guide_mask & kGuideExposureTex))
+    {
+        h.UpdateU32LE(20u);
+        h.UpdateF32LE(b.exposure_tex_r32f);
+    }
 
     return h.FinalHex();
 }

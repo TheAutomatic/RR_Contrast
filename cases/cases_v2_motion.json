@@ -333,7 +333,7 @@
       "f015_input_sha256": "21496db75dbfb8375dfbb67dcd1fbbe099b9b68aee449a0d312547312da23532"
     },
     {
-      "id": "P13_exposure_no_auto",
+      "id": "P13a_exposure_no_auto",
       "pass": "probes",
       "scene": "s1_temporal_halton",
       "guide_mask": 0,
@@ -356,6 +356,31 @@
       "save_frames": [15],
       "f000_input_sha256": "2c509e1e04ffed0fe76456cff5106f592e1ae20b65c8533ca6878442b49d4191",
       "f015_input_sha256": "33573e8d9c3dbbdf658359f68c5d61b701d05a091af5ea2b68bd96209fd13622"
+    },
+    {
+      "id": "P13b_exposure_tex_1x1",
+      "pass": "probes",
+      "scene": "s1_temporal_halton",
+      "guide_mask": 2048,
+      "alloc_render": [1280, 720],
+      "steady_render": [1280, 720],
+      "drs_render": [0, 0],
+      "output": [1920, 1080],
+      "perf_quality": 2,
+      "preset_hint": 6,
+      "create_flags": 11,
+      "in_subrect_base": [0, 0],
+      "mv_scale": [1, 1],
+      "mv_tex_scale_num": 1,
+      "mv_jitter_delta_sign": 0,
+      "manual_exposure_step": false,
+      "warmup_frames": 0,
+      "steady_frames": 16,
+      "drs_frames": 0,
+      "rounds": 1,
+      "save_frames": [15],
+      "f000_input_sha256": "ba9a1ef48dafae6fea5ce183d9c5fe7e1b869efb36858ae0d1940842091b4179",
+      "f015_input_sha256": "1142381e81ea2c75ea97e0210b2dc2cd4e79fd3fc7d4fdc59949c17b09863172"
     },
     {
       "id": "P14_input_subrect_base_32_24",

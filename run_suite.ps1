@@ -29,13 +29,26 @@ Write-Host "=== [0/6] Verifying canonical input SHA-256 fixtures ===" -Foregroun
 & $ExePath --verify-fixtures $CasesJson
 if ($LASTEXITCODE -ne 0) { throw "Canonical input fixture verification failed. Stop before GPU run." }
 
-# Record git commit & clean state for reproducibility
+# Record git commit & clean/patched state (including staged & untracked files) for 1:1 reproducibility
 $MetaDir = Join-Path $AbsOut "00_meta"
 New-Item -ItemType Directory -Force -Path $MetaDir | Out-Null
 if (Get-Command git -ErrorAction SilentlyContinue) {
     git -C $RepoRoot rev-parse HEAD 2>$null | Out-File -Encoding utf8 (Join-Path $MetaDir "git_head.txt")
-    git -C $RepoRoot status --short 2>$null | Out-File -Encoding utf8 (Join-Path $MetaDir "git_status.txt")
-    git -C $RepoRoot diff 2>$null | Out-File -Encoding utf8 (Join-Path $MetaDir "git_diff.patch")
+    git -C $RepoRoot log -1 --stat 2>$null | Out-File -Encoding utf8 (Join-Path $MetaDir "git_log_1.txt")
+    git -C $RepoRoot status --porcelain=v1 2>$null | Out-File -Encoding utf8 (Join-Path $MetaDir "git_status.txt")
+    git -C $RepoRoot diff HEAD 2>$null | Out-File -Encoding utf8 (Join-Path $MetaDir "git_diff.patch")
+    $Untracked = git -C $RepoRoot ls-files --others --exclude-standard 2>$null
+    if ($Untracked) {
+        $UntrackedRoot = Join-Path $MetaDir "untracked_files"
+        foreach ($relPath in $Untracked) {
+            $srcFile = Join-Path $RepoRoot $relPath
+            if (Test-Path -LiteralPath $srcFile -PathType Leaf) {
+                $dstFile = Join-Path $UntrackedRoot $relPath
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dstFile) | Out-Null
+                Copy-Item -LiteralPath $srcFile -Destination $dstFile -Force
+            }
+        }
+    }
 }
 if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
     nvidia-smi -q | Out-File -Encoding utf8 (Join-Path $MetaDir "nvidia_smi_q.txt")
